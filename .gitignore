@@ -13,6 +13,7 @@ logs/
 
 # === Local config with secrets ===
 business_config.yaml
+business_config_tes_rentals.yaml
 
 # === OS / Editor ===
 .DS_Store
