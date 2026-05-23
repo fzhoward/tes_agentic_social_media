@@ -1,0 +1,248 @@
+# Placeholder & Config Registry
+# ============================================================================
+# READ THIS BEFORE BUILDING OR MODIFYING ANY AGENT, TOOL, OR SKILL.
+#
+# This document is the single source of truth for:
+#   1. All {{PLACEHOLDER}} tokens used in skill files and SOPs
+#   2. All business_config.yaml paths and what they resolve to
+#   3. All Google Drive file IDs and their purposes
+#   4. All naming conventions for sheets, folders, and templates
+#
+# If a value is not in this document, it does not exist. Do not assume or
+# invent IDs, paths, or placeholder names.
+# ============================================================================
+
+
+# ============================================================================
+# SECTION 1: SKILL FILE PLACEHOLDERS ({{TOKEN}} format)
+# ============================================================================
+# Skill files are loaded from Google Drive by skill_loader.py.
+# Before returning skill text to an agent, skill_loader replaces these
+# tokens with values from business_config.yaml.
+#
+# IMPORTANT: Tokens use SCREAMING_SNAKE_CASE wrapped in double curly braces.
+# The mapping from token to config path is defined in skill_loader.py.
+# ============================================================================
+
+# --- Business Identity ---
+# {{BUSINESS_NAME}}        → business.name              → "T.E.S. Rentals"
+# {{BUSINESS_SHORT_NAME}}  → business.short_name         → "TES"
+# {{INDUSTRY}}             → business.industry           → "equipment rental"
+# {{SERVICE_AREA}}         → business.service_area        → "North Florida — Bradford, Union, Clay, Baker, Alachua, Columbia, Duval, Putnam counties"
+# {{SERVICE_AREA_SHORT}}   → business.service_area_short  → "North Florida"
+# {{TARGET_CUSTOMER}}      → business.target_customer     → "contractors, homeowners, and property managers..."
+# {{DIFFERENTIATOR}}       → business.differentiator      → "correct machine fit, maintained equipment..."
+
+# --- Owner ---
+# {{OWNER_NAME}}           → owner.name                  → "Zeb"
+# {{OWNER_ROLE}}           → owner.role                  → "owner and operator"
+# {{OWNER_EXPERIENCE}}     → owner.experience_summary    → "15+ years in equipment rental across North Florida"
+
+# --- Contact ---
+# {{PHONE}}                → contact.phone               → "(904) 452-0888"
+# {{WEBSITE}}              → contact.website             → "https://tesrents.com"
+# {{BOOKING_URL}}          → contact.booking_url         → "https://tesrents.com"
+# {{EMAIL}}                → contact.email               → "admin@tesrents.com"
+# {{GOOGLE_MAPS_URL}}      → contact.google_maps_url     → "https://www.google.com/maps/place/?q=place_id:ChIJyZ4d37L95YgR9yi3YNwP2nQ"
+
+# --- Strategy ---
+# {{POSTS_PER_WEEK_PER_PLATFORM}} → strategy.posts_per_week_per_platform → 7
+# {{LEAD_TIME_HOURS}}      → strategy.lead_time_hours    → 36
+# {{MIN_GAP_HOURS}}        → strategy.min_gap_hours      → 4
+# {{PRICING_POLICY}}       → strategy.pricing_in_posts   → "never"
+
+# --- Approval / Slack ---
+# {{MAX_QUEUE_DEPTH}}      → approval.max_queue_depth    → 7
+# {{SLACK_APPROVALS_CHANNEL}} → approval.slack_channel   → "#approvals"
+# {{SLACK_ERROR_CHANNEL}}  → approval.error_channel      → "#system-errors"
+
+# --- Brand Visuals ---
+# {{BRAND_FEEL}}           → brand_visuals.feel          → "Practical, rugged, reliable..."
+# {{VISUAL_CONTEXT}}       → brand_visuals.visual_context → "real jobsite photos with equipment..."
+# {{TYPOGRAPHY_STYLE}}     → brand_visuals.typography_style → "Bold, rugged typography..."
+
+# --- Catalog ---
+# {{PRIMARY_SUBJECT}}      → catalog.primary_subject     → "equipment"
+
+
+# ============================================================================
+# SECTION 2: BUSINESS CONFIG PATHS → VALUES
+# ============================================================================
+# These are the dot-notation paths used in config_loader.py.
+# Agents and tools access values via: config.get("dotted.path")
+# ============================================================================
+
+# --- Google Drive File IDs ---
+# drive.root_folder_id                → 1hTsUK9-ufyQSRSMrDCp9_guEUV2iatQQ
+# drive.content_queue_sheet_id        → 1nrqzf9Y8_nOdx7S0lP9CILV_tDz9RAHqbJqkQx9Bgeo
+# drive.performance_log_sheet_id      → 1t5OfF7_EvXYNtWR9L1vcRMm-Oyo1DfzDpminTZt4mEs
+# drive.strategy_guidance_file_id     → 1rEDcIkcp1ZZsJsT2_SqJQ_VOwdY6AwxE
+# drive.local_calendar_sheet_id       → "" (excluded from v1)
+# drive.brand_voice_file_id           → 1HKBeCVpqTdh_J4MNepG5q39CmjBRcY0MD4D_kHggpAQ
+# drive.generated_images_folder_id    → 1HMg1wlo6g3a4WEt0mSywl2f2btqWX897
+
+# --- Catalog ---
+# catalog.spec_sheet_id               → 1jqh03FCD_LW4XJ9ZA5KhdG4xHWNKrYlRs8_WGjy3PhM
+# catalog.image_folder_id             → 11tRhJWZaxijJsrsOlr1ukvW1jYaGYRLJOu6wkYVwi12jIZ1sjzwr9cbz4aA9yz0pb7h4sHtR
+# catalog.image_metadata_sheet_id     → "" (not yet populated)
+
+# --- Skill File IDs (loaded by skill_loader.py) ---
+# skills.hook_creation                → 1eoqYP036gKFU3ZktZzg3wpISZfwI12eD
+# skills.gbp_post                     → 1836-0OdS-CxrQXqygCcoJM9-qoebJmx4
+# skills.cta                          → 1bgLqZhb4RPcPI07-EEchGJ78k25kR7vZ
+# skills.content_types                → 1bC2Gs28A4GKCQPAGqmQlkDlKij2iR5T3
+# skills.platform_style               → 109OhTQDBpimJf3EvX36ZiaBPfdxM6l1x
+# skills.critic_checklist             → 1rMnX99R75yJJPZe4HoXcKaCv4zH-3jnl
+# skills.image_prompt_universal       → 1IV61Q6EjjjxK1zDuTEMP--pRWnmcw5XO
+# skills.image_prompt_social          → 1_9HzTGdWOIN3qAhaQmg_3PORCB0T-YPA
+# skills.brand_voice                  → 1HKBeCVpqTdh_J4MNepG5q39CmjBRcY0MD4D_kHggpAQ
+# skills.strategy_guidance            → 1rEDcIkcp1ZZsJsT2_SqJQ_VOwdY6AwxE
+# skills.few_shot_library             → 16vGjPbd9fWz4GjDFBpr4o5TH-wdzYT_GOhvwXeqrvQg
+
+# --- Workflow SOP File IDs (loaded by skill_loader.py) ---
+# workflows.asset_indexer             → 12fWfs2VbO2hoA0KpgeErr39sruNX_5GY
+# workflows.strategist                → 19WMHT5JyRKlc4XPScJ4IolI4QvsfoIp1
+# workflows.drafter                   → 1pkPwas5VGjyDOA7dpN9t-cs0-5LwtIIH
+# workflows.critic                    → 1HnGHIwXrOyChHFzJmVW3Rd-qOLL3oFGH
+# workflows.learning                  → 1T4B2K9wxGAGgXE-8pA7Qe3wYwUcSgN9i
+# workflows.systems_health            → 1Yj39msVaHk3tai1fm_dJu_nAmNO4AeT_
+
+# --- Creatomate Template IDs ---
+# creatomate.equipment_post_image.templates.diagonal_slash.id      → 5f7e02d4-5e52-4d4a-96f1-41a8f55c19ac
+# creatomate.equipment_post_image.templates.bottom_bar_takeover.id → 5aedba31-bbb4-46c5-b196-77b3a302daba
+# creatomate.equipment_post_image.templates.corner_punch.id        → 8d03dab0-f72d-4474-825c-633f205c4733
+# creatomate.equipment_post_image.templates.split_frame.id         → 7db3efe5-8b14-43d2-b4b9-86f51b83f6d4
+# creatomate.equipment_post_image.templates.stencil_stamp.id       → 96607f36-08e9-4ed9-b334-4c5920c3abf0
+# creatomate.equipment_post_video.templates.slow_push.id           → 627ca53b-bb63-473a-b9ee-ef84687b38e2
+# creatomate.equipment_post_video.templates.pan_right.id           → d93cc698-b2e2-4d33-a9b2-aeb0d4f2e30d
+# creatomate.equipment_post_video.templates.zoom_out_reveal.id     → 6c397952-b4ac-432f-99e7-e46a3571c142
+# creatomate.equipment_post_video.templates.diagonal_sweep.id      → 31860113-3710-44e4-bd16-62f4b7ac13ba
+# creatomate.equipment_post_video.templates.cinematic_letterbox.id → dba2aec0-10a9-4f6f-8027-95d55c2852a9
+# creatomate.review_image.templates.bold_quote_card.id             → 214dbe64-d3c2-4206-a703-fbd5370effc8
+# creatomate.review_image.templates.photo_testimonial.id           → 58a402c4-2a9e-4866-9d80-8fee6f1c2e30
+# creatomate.review_image.templates.split_review.id                → 2fc1d8eb-6c5e-4bfd-94f3-b73c5486d642
+# creatomate.review_image.templates.star_burst.id                  → 921075d1-a61b-448e-8ddb-d9d50b6bf229
+# creatomate.review_image.templates.stamp_card.id                  → a07cdafe-b646-4336-aef9-5538e3e3d545
+# creatomate.review_video.templates.star_cascade.id                → 8ba71360-06ff-4fbb-99f7-2df4e4763d4c
+# creatomate.review_video.templates.photo_reveal.id                → 6923474b-06ed-4f06-85ae-f1840dea4a8d
+# creatomate.review_video.templates.split_slide.id                 → 3e7498d0-2adf-42ae-89e2-1e43abb0b960
+# creatomate.review_video.templates.pulse_star.id                  → 887dc134-01db-4eab-a24c-746585de15c8
+# creatomate.review_video.templates.stamp_slam.id                  → 95eb14a8-5418-4565-8558-0372813ee35a
+
+# --- Creatomate Asset UUIDs (in-platform media library, NOT Drive IDs) ---
+# creatomate.assets.logo_uuid                        → 388939ec-c087-4cbc-9448-978ba434abdd
+# creatomate.assets.placeholder_equipment_photo_uuid → bc53a14d-ed71-4a7b-9741-46769cb3fd88
+
+# --- Creatomate Dynamic Field Names (element names in templates) ---
+# Equipment post templates use:
+#   "Equipment-Photo"  → source image URL (modifications key)
+#   "Hook-Text"        → hook text overlay (modifications key)
+#
+# Review templates use:
+#   "Review-Text"      → review excerpt (modifications key)
+#   "Reviewer-Name"    → reviewer first name (modifications key)
+#   "Star-Rating"      → "★★★★★" string (modifications key, image templates only)
+#
+# Templates with extra_dynamic_fields: ["Equipment-Photo"]:
+#   equipment_post_image.bottom_bar_takeover (T2)
+#   equipment_post_video.pan_right (T7)
+#   review_image.photo_testimonial (T12)
+#   review_video.photo_reveal (T17)
+
+# --- Platform Account IDs (SocialBu) ---
+# platforms.accounts.facebook.account_id    → "173903"
+# platforms.accounts.instagram.account_id   → "173904"
+# platforms.accounts.gbp.account_id         → "173906"
+
+# --- GBP API Identifiers ---
+# platforms.accounts.gbp.gbp_account_id     → "accounts/108109713594635511816"
+# platforms.accounts.gbp.gbp_location_id    → "locations/7215686684266711326"
+
+# --- Brand Colors (for reference, not injected as placeholders) ---
+# Primary orange:   #E8601C
+# Dark base:        #1A1A1A
+# Black:            #000000
+# White text:       #FFFFFF
+# Logo backing:     rgba(255,255,255,0.85)
+# Dark overlay:     rgba(26,26,26,0.3) to rgba(26,26,26,0.95)
+# Orange overlay:   rgba(232,96,28,0.92)
+
+
+# ============================================================================
+# SECTION 3: GOOGLE SHEETS — COLUMN STRUCTURES
+# ============================================================================
+# These are the expected column headers for each Google Sheet.
+# Tools that read/write sheets must use these exact column names.
+# ============================================================================
+
+# --- Equipment Catalog (catalog.spec_sheet_id) ---
+# Core fields (in order):
+#   item_id, item_name, category, status, description,
+#   primary_image_id, image_count, last_posted, post_count, tags, notes
+#
+# Spec fields (appended after core, order may vary):
+#   weight, dig_depth, reach, capacity, tail_swing, horsepower,
+#   transport_width, rental_rate_note, availability, common_jobs, best_for
+
+# --- Content Queue (drive.content_queue_sheet_id) ---
+# Fields (in order):
+#   row_id, status, platform, scheduled_datetime, objective,
+#   content_type, focus_equipment_id, angle, cta_type, media_format,
+#   text_overlay, source_image_id, draft_notes,
+#   caption, image_url, first_comment, critic_score, critic_notes,
+#   published_post_id, published_datetime
+
+# --- Performance Log (drive.performance_log_sheet_id) ---
+# Fields (in order):
+#   post_id, platform, published_datetime, content_type, objective,
+#   media_format, focus_equipment_id,
+#   impressions_24h, clicks_24h, reactions_24h, comments_24h, shares_24h,
+#   impressions_7d, clicks_7d, reactions_7d, comments_7d, shares_7d,
+#   snapshot_24h_datetime, snapshot_7d_datetime
+
+
+# ============================================================================
+# SECTION 4: NAMING CONVENTIONS
+# ============================================================================
+
+# --- File naming ---
+# Agent scripts:         agents/<agent_name>.py        (e.g., agents/strategist.py)
+# Tool scripts:          tools/<tool_name>.py           (e.g., tools/config_loader.py)
+# Test scripts:          tests/test_<module_name>.py    (e.g., tests/test_config_loader.py)
+# Skill cache (local):   skills/<skill_key>.md          (e.g., skills/hook_creation.md)
+
+# --- Config access pattern ---
+# Always use config_loader.get("dotted.path") — never parse YAML directly in agents.
+# Example: config.get("catalog.spec_sheet_id") → "1jqh03FCD_LW4XJ9ZA5KhdG4xHWNKrYlRs8_WGjy3PhM"
+# Example: config.get("creatomate.equipment_post_image.templates") → dict of all 5 templates
+
+# --- Placeholder injection pattern ---
+# skill_loader.load("hook_creation") internally:
+#   1. Reads skills.hook_creation from config → gets file ID
+#   2. Downloads file content from Drive by that ID
+#   3. Replaces all {{PLACEHOLDER}} tokens using the mapping in this document
+#   4. Returns the resolved text string
+
+# --- Environment variable access ---
+# Always use: os.environ.get("VARIABLE_NAME") or dotenv.load_dotenv() + os.getenv()
+# Never hardcode API keys, tokens, or secrets anywhere.
+
+
+# ============================================================================
+# SECTION 5: SOP PLACEHOLDER TOKENS (used in workflow SOPs)
+# ============================================================================
+# These appear in workflow SOP files and are replaced by skill_loader.py
+# using the same injection mechanism as skill placeholders.
+# ============================================================================
+
+# {{MAX_QUEUE_DEPTH}}              → approval.max_queue_depth           → 7
+# {{POSTS_PER_WEEK_PER_PLATFORM}} → strategy.posts_per_week_per_platform → 7
+# {{MIN_GAP_HOURS}}                → strategy.min_gap_hours             → 4
+# {{LEAD_TIME_HOURS}}              → strategy.lead_time_hours           → 36
+# {{SLACK_APPROVALS_CHANNEL}}      → approval.slack_channel             → "#approvals"
+# {{SLACK_ERROR_CHANNEL}}          → approval.error_channel             → "#system-errors"
+
+
+# ============================================================================
+# END OF REGISTRY
+# ============================================================================
