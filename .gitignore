@@ -1,8 +1,31 @@
+# === Secrets & Credentials (NEVER commit) ===
 .env
 credentials*.json
 token*.json
 *-service-account*.json
+
+# === Temporary & Generated ===
 .tmp/
 __pycache__/
 *.pyc
+*.pyo
 logs/
+
+# === Local config with secrets ===
+business_config.yaml
+
+# === OS / Editor ===
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === Python ===
+venv/
+.venv/
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,27 @@
+# Core dependencies for the Portable Agentic Social Media System
+# Install: pip install -r requirements.txt
+
+# --- Config & Environment ---
+python-dotenv>=1.0.0
+pyyaml>=6.0
+
+# --- Google APIs ---
+google-auth>=2.20.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+google-api-python-client>=2.90.0
+gspread>=5.10.0
+
+# --- LLM Providers ---
+anthropic>=0.25.0
+openai>=1.30.0
+
+# --- HTTP ---
+requests>=2.31.0
+httpx>=0.27.0
+
+# --- Slack ---
+slack-sdk>=3.21.0
+
+# --- Utilities ---
+Pillow>=10.0.0
