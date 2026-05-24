@@ -110,7 +110,7 @@
 # --- Catalog ---
 # catalog.spec_sheet_id               → 15-q8d_D6XZrKAOaz3CBqUjurSMoZW6cBAcL3XmKduYk
 # catalog.image_folder_id             → 11tRhJWZaxijJsrsOlr1ukvW1jYaGYRLJOu6wkYVwi12jIZ1sjzwr9cbz4aA9yz0pb7h4sHtR
-# catalog.image_metadata_sheet_id     → "" (not yet populated)
+# catalog.image_metadata_sheet_id     → 1mxuYmfs5bmp4wWECvp6zImns2U3EqaFLPagmZKiHCsM
 
 # --- Skill File IDs (loaded by skill_loader.py) ---
 # skills.hook_creation                → 1eoqYP036gKFU3ZktZzg3wpISZfwI12eD
@@ -206,7 +206,7 @@
 # Updated: Session 10 — switched to populated sheet (40 items, uploaded from Session 6 XLSX)
 #
 # Core fields (in order):
-#   item_id, item_name, category, status, description,
+#   item_id, item_name, category, model, status, description,
 #   primary_image_id, image_count, last_posted, post_count, tags, notes
 #
 # Spec fields (in order, after core):
