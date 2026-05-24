@@ -82,7 +82,7 @@
 # drive.generated_images_folder_id    → 1HMg1wlo6g3a4WEt0mSywl2f2btqWX897
 
 # --- Catalog ---
-# catalog.spec_sheet_id               → 1jqh03FCD_LW4XJ9ZA5KhdG4xHWNKrYlRs8_WGjy3PhM
+# catalog.spec_sheet_id               → 15-q8d_D6XZrKAOaz3CBqUjurSMoZW6cBAcL3XmKduYk
 # catalog.image_folder_id             → 11tRhJWZaxijJsrsOlr1ukvW1jYaGYRLJOu6wkYVwi12jIZ1sjzwr9cbz4aA9yz0pb7h4sHtR
 # catalog.image_metadata_sheet_id     → "" (not yet populated)
 
@@ -176,29 +176,58 @@
 # ============================================================================
 
 # --- Equipment Catalog (catalog.spec_sheet_id) ---
+# Sheet ID: 15-q8d_D6XZrKAOaz3CBqUjurSMoZW6cBAcL3XmKduYk
+# Updated: Session 10 — switched to populated sheet (40 items, uploaded from Session 6 XLSX)
+#
 # Core fields (in order):
 #   item_id, item_name, category, status, description,
 #   primary_image_id, image_count, last_posted, post_count, tags, notes
 #
-# Spec fields (appended after core, order may vary):
+# Spec fields (in order, after core):
 #   weight, dig_depth, reach, capacity, tail_swing, horsepower,
 #   transport_width, rental_rate_note, availability, common_jobs, best_for
+#
+# Total: 22 columns. 40 data rows.
 
 # --- Content Queue (drive.content_queue_sheet_id) ---
-# Fields (in order):
+# Updated: Session 10 — reconciled with live sheet (30 columns)
+#
+# Strategist-written fields (set when row is created):
 #   row_id, status, platform, scheduled_datetime, objective,
 #   content_type, focus_equipment_id, angle, cta_type, media_format,
-#   text_overlay, source_image_id, draft_notes,
-#   caption, image_url, first_comment, critic_score, critic_notes,
-#   published_post_id, published_datetime
+#   text_overlay, source_image_id, draft_notes
+#
+# Drafter-written fields (set during drafting):
+#   caption, first_comment, cta_text, hook_text, image_overlay_text,
+#   media_url, media_format_used, draft_rationale, revision_round
+#
+# Critic-written fields (set during QA):
+#   critic_verdict, critic_failed_checks, critic_warnings, critic_notes
+#
+# Approval/publishing fields (set during approval and publishing):
+#   approved_datetime, published_datetime, socialbu_post_id, rejection_reason
+#
+# Total: 30 columns.
 
 # --- Performance Log (drive.performance_log_sheet_id) ---
-# Fields (in order):
-#   post_id, platform, published_datetime, content_type, objective,
-#   media_format, focus_equipment_id,
-#   impressions_24h, clicks_24h, reactions_24h, comments_24h, shares_24h,
-#   impressions_7d, clicks_7d, reactions_7d, comments_7d, shares_7d,
-#   snapshot_24h_datetime, snapshot_7d_datetime
+# Updated: Session 10 — reconciled with live sheet (21 columns)
+#
+# Identity fields:
+#   post_id, queue_row_id, platform
+#
+# Content metadata (copied from Content Queue for analysis):
+#   objective, content_type, media_format, cta_type, focus_equipment_id
+#
+# Timing fields:
+#   posted_datetime, day_of_week, hour
+#
+# 24-hour snapshot metrics:
+#   impressions_24h, reach_24h, engagement_24h, clicks_24h, cta_conversions_24h
+#
+# 7-day snapshot metrics:
+#   impressions_7d, reach_7d, engagement_7d, clicks_7d, cta_conversions_7d
+#
+# Total: 21 columns.
 
 
 # ============================================================================
@@ -213,7 +242,7 @@
 
 # --- Config access pattern ---
 # Always use config_loader.get("dotted.path") — never parse YAML directly in agents.
-# Example: config.get("catalog.spec_sheet_id") → "1jqh03FCD_LW4XJ9ZA5KhdG4xHWNKrYlRs8_WGjy3PhM"
+# Example: config.get("catalog.spec_sheet_id") → "15-q8d_D6XZrKAOaz3CBqUjurSMoZW6cBAcL3XmKduYk"
 # Example: config.get("creatomate.equipment_post_image.templates") → dict of all 5 templates
 
 # --- Placeholder injection pattern ---
