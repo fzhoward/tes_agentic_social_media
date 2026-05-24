@@ -50,14 +50,34 @@ PLACEHOLDER_MAP: dict[str, str] = {
     "MAX_QUEUE_DEPTH": "approval.max_queue_depth",
     "SLACK_APPROVALS_CHANNEL": "approval.slack_channel",
     "SLACK_ERROR_CHANNEL": "approval.error_channel",
+    "SLACK_HEALTH_CHANNEL": "health.slack_channel",
+
+    # Platform Account IDs
+    "FB_ACCOUNT_ID": "platforms.accounts.facebook.account_id",
+    "IG_ACCOUNT_ID": "platforms.accounts.instagram.account_id",
+    "GBP_ACCOUNT_ID": "platforms.accounts.gbp.account_id",
+
+    # Learning Agent
+    "LEARNING_AGENT_DAY": "metrics.learning_agent_day",
+    "MAJOR_SHIFT_THRESHOLD": "metrics.major_shift_threshold",
+    "MIN_DATA_POINTS_FOR_PATTERN": "metrics.min_data_points_for_pattern",
+
+    # Systems Health Agent
+    "SYSTEMS_HEALTH_DAY": "health.report_day",
+    "MONTHLY_BUDGET_LIMIT": "health.monthly_budget_limit",
 
     # Brand Visuals
     "BRAND_FEEL": "brand_visuals.feel",
+    "BRAND_VISUAL_FEEL": "brand_visuals.feel",
     "VISUAL_CONTEXT": "brand_visuals.visual_context",
     "TYPOGRAPHY_STYLE": "brand_visuals.typography_style",
 
     # Catalog
     "PRIMARY_SUBJECT": "catalog.primary_subject",
+    "CATALOG_PRIMARY_SUBJECT": "catalog.primary_subject",
+
+    # Business Description (no canonical short form)
+    "BUSINESS_DESCRIPTION": "business.description",
 }
 
 

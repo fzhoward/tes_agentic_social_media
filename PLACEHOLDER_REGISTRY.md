@@ -27,6 +27,7 @@
 # --- Business Identity ---
 # {{BUSINESS_NAME}}        → business.name              → "T.E.S. Rentals"
 # {{BUSINESS_SHORT_NAME}}  → business.short_name         → "TES"
+# {{BUSINESS_DESCRIPTION}} → business.description        → "local equipment rental company in North Florida"
 # {{INDUSTRY}}             → business.industry           → "equipment rental"
 # {{SERVICE_AREA}}         → business.service_area        → "North Florida — Bradford, Union, Clay, Baker, Alachua, Columbia, Duval, Putnam counties"
 # {{SERVICE_AREA_SHORT}}   → business.service_area_short  → "North Florida"
@@ -55,14 +56,39 @@
 # {{MAX_QUEUE_DEPTH}}      → approval.max_queue_depth    → 7
 # {{SLACK_APPROVALS_CHANNEL}} → approval.slack_channel   → "#approvals"
 # {{SLACK_ERROR_CHANNEL}}  → approval.error_channel      → "#system-errors"
+# {{SLACK_HEALTH_CHANNEL}} → health.slack_channel        → "#system-health"
 
 # --- Brand Visuals ---
 # {{BRAND_FEEL}}           → brand_visuals.feel          → "Practical, rugged, reliable..."
+# {{BRAND_VISUAL_FEEL}}    → brand_visuals.feel          → "Practical, rugged, reliable..."  (alias of {{BRAND_FEEL}})
 # {{VISUAL_CONTEXT}}       → brand_visuals.visual_context → "real jobsite photos with equipment..."
 # {{TYPOGRAPHY_STYLE}}     → brand_visuals.typography_style → "Bold, rugged typography..."
 
 # --- Catalog ---
 # {{PRIMARY_SUBJECT}}      → catalog.primary_subject     → "equipment"
+# {{CATALOG_PRIMARY_SUBJECT}} → catalog.primary_subject  → "equipment"  (alias of {{PRIMARY_SUBJECT}})
+
+# --- Platform Account IDs ---
+# {{FB_ACCOUNT_ID}}        → platforms.accounts.facebook.account_id   → "173903"
+# {{IG_ACCOUNT_ID}}        → platforms.accounts.instagram.account_id  → "173904"
+# {{GBP_ACCOUNT_ID}}       → platforms.accounts.gbp.account_id         → "173906"
+
+# --- Learning Agent ---
+# {{LEARNING_AGENT_DAY}}         → metrics.learning_agent_day          → "monday"
+# {{MAJOR_SHIFT_THRESHOLD}}      → metrics.major_shift_threshold       → 20
+# {{MIN_DATA_POINTS_FOR_PATTERN}} → metrics.min_data_points_for_pattern → 5
+
+# --- Systems Health Agent ---
+# {{SYSTEMS_HEALTH_DAY}}   → health.report_day            → "monday"
+# {{MONTHLY_BUDGET_LIMIT}} → health.monthly_budget_limit  → null  (owner sets once baseline established)
+
+# --- Runtime tokens (NOT in PLACEHOLDER_MAP — filled by agent at execution time) ---
+# These pass through skill_loader unchanged and are substituted by the calling agent
+# from Content Queue row data or as literal documentation examples.
+# {{TOPIC}}        — gbp_post: per-post topic supplied by Drafter
+# {{PLATFORM}}     — critic, image_prompt_social: target platform from Content Queue row
+# {{ROW_ID}}       — critic: Content Queue row identifier being QA'd
+# {{PLACEHOLDER}}  — image_prompt_social: literal documentation example, NOT a real token
 
 
 # ============================================================================
@@ -270,6 +296,12 @@
 # {{LEAD_TIME_HOURS}}              → strategy.lead_time_hours           → 36
 # {{SLACK_APPROVALS_CHANNEL}}      → approval.slack_channel             → "#approvals"
 # {{SLACK_ERROR_CHANNEL}}          → approval.error_channel             → "#system-errors"
+# {{SLACK_HEALTH_CHANNEL}}         → health.slack_channel               → "#system-health"
+# {{LEARNING_AGENT_DAY}}           → metrics.learning_agent_day         → "monday"
+# {{MAJOR_SHIFT_THRESHOLD}}        → metrics.major_shift_threshold      → 20
+# {{MIN_DATA_POINTS_FOR_PATTERN}} → metrics.min_data_points_for_pattern → 5
+# {{SYSTEMS_HEALTH_DAY}}           → health.report_day                  → "monday"
+# {{MONTHLY_BUDGET_LIMIT}}         → health.monthly_budget_limit        → null
 
 
 # ============================================================================
