@@ -16,20 +16,27 @@ import argparse
 import json
 import sys
 from collections import defaultdict
-from datetime import datetime
 from typing import Any
 
 from tools import sheets_helpers, skill_loader, slack_helpers
 from tools.config_loader import Config, load_config
+from tools.image_selector import (  # noqa: F401  — re-exported for tests/callers
+    META_CATEGORY,
+    META_IMAGE_ID,
+    META_MODEL,
+    META_PHOTO_CONTEXT,
+    META_PHOTO_QUALITY,
+    META_TIMESTAMP,
+    _CONTEXT_RANK,
+    _QUALITY_RANK,
+    _first_tab as _shared_first_tab,
+    _image_rank,
+    _norm,
+    _parse_timestamp,
+    group_metadata,
+    select_best_image,
+)
 
-
-# --- Metadata column names (Image Metadata sheet) ---
-META_IMAGE_ID = "Image_ID"
-META_CATEGORY = "Equipment Category"
-META_MODEL = "Equipment Model"
-META_TIMESTAMP = "Timestamp"
-META_PHOTO_QUALITY = "Photo Quality"
-META_PHOTO_CONTEXT = "Photo Context"
 
 # --- Catalog column names ---
 CAT_ITEM_ID = "item_id"
@@ -41,76 +48,6 @@ CAT_PRIMARY_IMAGE_ID = "primary_image_id"
 CAT_IMAGE_COUNT = "image_count"
 CAT_TAGS = "tags"
 CAT_POST_COUNT = "post_count"
-
-# Ranking weights for "best image" selection.
-# Higher rank == better. Quality dominates context.
-_QUALITY_RANK = {
-    "great shot": 2,
-    "decent": 1,
-}
-_CONTEXT_RANK = {
-    "equipment working": 3,
-    "finished result": 2,
-    "before (job site before work)": 2,
-    "equipment staged / parked": 1,
-    "on the trailer": 0,
-}
-
-
-def _norm(value: Any) -> str:
-    """Lowercase + strip for case-insensitive match keys."""
-    return ("" if value is None else str(value)).strip().lower()
-
-
-def _parse_timestamp(raw: str) -> float:
-    """Best-effort timestamp parse for tie-breaking. Unparseable -> -inf."""
-    if not raw:
-        return float("-inf")
-    raw = raw.strip()
-    formats = (
-        "%m/%d/%Y %H:%M:%S",
-        "%m/%d/%Y %H:%M",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-    )
-    for fmt in formats:
-        try:
-            return datetime.strptime(raw, fmt).timestamp()
-        except ValueError:
-            continue
-    return float("-inf")
-
-
-def _image_rank(row: dict) -> tuple[int, int, float]:
-    """Sort key for an image row. Higher == better."""
-    quality = _QUALITY_RANK.get(_norm(row.get(META_PHOTO_QUALITY)), 0)
-    context = _CONTEXT_RANK.get(_norm(row.get(META_PHOTO_CONTEXT)), 0)
-    recency = _parse_timestamp(row.get(META_TIMESTAMP, ""))
-    return (quality, context, recency)
-
-
-def select_best_image(image_rows: list[dict]) -> dict:
-    """Return the best image row from a non-empty group."""
-    if not image_rows:
-        raise ValueError("select_best_image called with empty list")
-    return max(image_rows, key=_image_rank)
-
-
-def group_metadata(meta_rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
-    """Group metadata rows by (lowercased category, lowercased model).
-
-    Rows missing either category or model are skipped — they cannot match.
-    """
-    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    for row in meta_rows:
-        cat = _norm(row.get(META_CATEGORY))
-        model = _norm(row.get(META_MODEL))
-        if not cat or not model:
-            continue
-        if not str(row.get(META_IMAGE_ID, "")).strip():
-            continue
-        groups[(cat, model)].append(row)
-    return dict(groups)
 
 
 def index_catalog(
@@ -352,16 +289,9 @@ def run(dry_run: bool = False) -> dict:
     }
 
 
-def _first_tab(service: Any, spreadsheet_id: str) -> str:
-    """Return the title of the first tab in the given spreadsheet."""
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets(properties(title))",
-    ).execute()
-    sheets = meta.get("sheets", [])
-    if not sheets:
-        raise RuntimeError(f"spreadsheet {spreadsheet_id} has no tabs")
-    return sheets[0]["properties"]["title"]
+# _first_tab is shared with tools.image_selector — alias here so existing
+# call sites and tests that use asset_indexer._first_tab continue to work.
+_first_tab = _shared_first_tab
 
 
 def main(argv: list[str] | None = None) -> int:

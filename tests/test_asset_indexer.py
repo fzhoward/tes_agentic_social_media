@@ -219,9 +219,18 @@ def run_tests() -> int:
         _check("8. dry-run", False, f"{type(exc).__name__}: {exc}")
 
     # 9. next_item_id generation — produces correct sequential ID.
+    # Live expectation is computed from current catalog state (not hardcoded)
+    # so the test is robust as the catalog grows.
     try:
         existing = [r.get("item_id", "") for r in catalog_rows]
-        # Highest current is TES-040 (40 catalog rows). Next should be TES-041.
+        live_max = 0
+        for raw in existing:
+            s = str(raw).strip()
+            if s.startswith("TES-") and s[4:].isdigit():
+                n = int(s[4:])
+                if n > live_max:
+                    live_max = n
+        expected_live = f"TES-{live_max + 1:03d}"
         nxt = asset_indexer.next_item_id(existing, prefix="TES-")
 
         # Synthetic edge case: gap-free incrementing.
@@ -232,9 +241,10 @@ def run_tests() -> int:
         empty_nxt = asset_indexer.next_item_id([], prefix="TES-")
 
         _check(
-            "9. next_item_id — live next == TES-041, synthetic next == TES-008, empty == TES-001",
-            nxt == "TES-041" and synth_nxt == "TES-008" and empty_nxt == "TES-001",
-            f"live_next={nxt!r}, synth_next={synth_nxt!r}, empty_next={empty_nxt!r}",
+            f"9. next_item_id — live next == {expected_live}, synthetic next == TES-008, empty == TES-001",
+            nxt == expected_live and synth_nxt == "TES-008" and empty_nxt == "TES-001",
+            f"live_next={nxt!r} (expected {expected_live!r}), "
+            f"synth_next={synth_nxt!r}, empty_next={empty_nxt!r}",
         )
     except Exception as exc:
         _check("9. next_item_id", False, f"{type(exc).__name__}: {exc}")
