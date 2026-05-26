@@ -188,9 +188,9 @@ Only one button per post. The Strategist or Drafter selects the button type base
 
 ## Cross-Platform Summary
 
-| Caption Langth Targets | Facebook | Instagram | GBP |
+| Constraint | Facebook | Instagram | GBP |
 |-----------|----------|-----------|-----|
-| Caption limit | 500-1500 chars | 800-1500 chars | 150-200 chars |
+| Caption Length Targets | 500-1500 chars | 800-1500 chars | 150-200 chars |
 | Feed truncation | ~477 chars | ~125 chars | ~150-200 chars |
 | Recommended image size | 1080 x 1350 (4:5) | 1080 x 1350 (4:5) | 1200 x 900 (4:3) |
 | Image required to schedule | No | **Yes — SocialBu rejects the API call without media** | No |
