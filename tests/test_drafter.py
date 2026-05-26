@@ -169,6 +169,61 @@ def test_platform_char_limit() -> None:
     )
 
 
+def test_build_drafter_messages_anti_fabrication() -> None:
+    """The system message must explicitly forbid invented stories, prices,
+    and local statistics. Locks in the four anti-fabrication rules so a
+    future prompt edit can't silently drop them.
+    """
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_CTA_TYPE: "save",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "image2_enhanced",
+        drafter.CQ_ANGLE: "Show the machine on a tight residential lot.",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+    system_msg, user_msg = drafter.build_drafter_messages(
+        row=row,
+        catalog_item=None,
+        config=config,
+        brand_voice="(brand voice text)",
+        hook_skill="(hook skill text)",
+        cta_skill="(cta skill text)",
+        platform_style="(platform style text)",
+        few_shot_library="(few shot library text)",
+        strategy_guidance="(strategy guidance text)",
+    )
+
+    sys_lower = system_msg.lower()
+    user_lower = user_msg.lower()
+
+    # Each of the four anti-fabrication rules must show up by signature phrase
+    # in the system message.
+    required_phrases = [
+        "anti-fabrication",
+        "customer stories",         # rule 1: no invented stories
+        "dollar amounts",           # rule 2: no invented prices
+        "local statistics",         # rule 3: no invented local stats
+        "specific factual claim",   # rule 4: trace-back requirement
+    ]
+    missing_sys = [p for p in required_phrases if p not in sys_lower]
+
+    # And the user-message critical-instructions section must carry a
+    # reinforcement line (we want this rule echoed at the prompt tail).
+    user_reinforced = "anti-fabrication" in user_lower
+
+    _check(
+        "9. build_drafter_messages — anti-fabrication rules present in "
+        "system message + reinforced in user message",
+        not missing_sys and user_reinforced,
+        f"missing_sys={missing_sys}, user_reinforced={user_reinforced}",
+    )
+
+
 # ----------------------------------------------------------------------
 # Integration test
 # ----------------------------------------------------------------------
@@ -188,7 +243,7 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
     # =================================================================
     queue_id = config.get("drive.content_queue_sheet_id")
     if not queue_id:
-        _check("9. drafter_dry_run — config has content_queue_sheet_id", False, "missing")
+        _check("10. drafter_dry_run — config has content_queue_sheet_id", False, "missing")
         return
 
     try:
@@ -197,7 +252,7 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
         before = sheets_helpers.read_all_rows(queue_id, queue_tab, service=service)
     except Exception as exc:
         _check(
-            "9. drafter_dry_run — read pre-snapshot",
+            "10. drafter_dry_run — read pre-snapshot",
             False,
             f"{type(exc).__name__}: {exc}",
         )
@@ -206,7 +261,7 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
     target = _find_planned_row(before)
     if target is None:
         _check(
-            "9. drafter_dry_run — locate a planned row",
+            "10. drafter_dry_run — locate a planned row",
             False,
             "no rows with status=planned in Content Queue — "
             "run the Strategist first or add a test row",
@@ -216,7 +271,7 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
     row_id = str(target.get(drafter.CQ_ROW_ID, "")).strip()
     if not row_id:
         _check(
-            "9. drafter_dry_run — planned row has row_id",
+            "10. drafter_dry_run — planned row has row_id",
             False,
             f"row missing row_id: {target!r}",
         )
@@ -228,7 +283,7 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
             result = drafter.run_single(row_id, dry_run=True)
     except Exception as exc:
         _check(
-            "9. drafter_dry_run — run_single completes",
+            "10. drafter_dry_run — run_single completes",
             False,
             f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
         )
@@ -260,7 +315,7 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
         )
 
     _check(
-        "9. drafter_dry_run — status ok, dry_run True, no writes, "
+        "10. drafter_dry_run — status ok, dry_run True, no writes, "
         "row status preserved",
         status_ok and dry_ok and same_len and status_still_planned
         and success_body_ok,
@@ -287,6 +342,7 @@ def run_tests(run_live: bool) -> int:
     test_overlay_hook_validation_empty_when_not_required()
     test_banned_language_check()
     test_platform_char_limit()
+    test_build_drafter_messages_anti_fabrication()
 
     if run_live:
         print()

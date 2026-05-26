@@ -642,6 +642,33 @@ def build_drafter_messages(
         "company. You write short, punchy, platform-native captions that "
         "follow strict brand voice rules. You also generate hooks for both "
         "the caption opening and the image text overlay.\n\n"
+        "Anti-fabrication rules — these are non-negotiable:\n"
+        "1. Never invent customer stories, testimonials, anecdotes, or "
+        "quotes — even paraphrased or anonymized ones. If no real customer "
+        "story is provided in the inputs, do not create one. Framings like "
+        "\"last month a customer used this for...\", \"we had a guy who...\", "
+        "or \"one of our regulars said...\" are off-limits unless the story "
+        "is explicitly handed to you in the assignment or equipment details.\n"
+        "2. Never include specific dollar amounts, price ranges, hourly "
+        "rates, or cost estimates (for example \"$150-300 per hour\", "
+        "\"around $2,000 to rent\", \"saves you $400 a day\") unless that "
+        "exact value appears verbatim in the catalog data provided. This is "
+        "separate from the broader pricing-language ban — this rule covers "
+        "invented numbers that would not trip the banned-phrase filter.\n"
+        "3. Never invent local statistics, development counts, construction "
+        "figures, project counts, permit numbers, or demographic claims (for "
+        "example \"three new subdivisions broke ground last month\", \"over "
+        "200 new developments in Clay County\", \"permits are up 30 percent "
+        "this year\"). Local references must stay general and verifiable — "
+        "phrases like \"North Florida's building season\", \"Clay County's "
+        "heavy clay soil\", or \"hurricane season\" are fine. Specific "
+        "counts, percentages, and statistics about the area are not.\n"
+        "4. Every specific factual claim in the caption (spec values, model "
+        "names, capacities, dimensions, place names, numbers, attribution) "
+        "must trace back either to the catalog data shown in the assignment "
+        "or to general common knowledge that any reader could verify. If you "
+        "cannot point to where a claim comes from, do not include it. When "
+        "in doubt, write general framing instead of a specific number.\n\n"
         "Return your output as valid JSON only. No markdown fences, no "
         "commentary before or after the JSON."
     )
@@ -723,6 +750,7 @@ Return exactly this JSON shape (no markdown fences, no commentary):
 - `first_comment` is populated {'(link post — include the URL ' + link_target + ' with a short lead-in prefix)' if is_link_post else '(empty string — this is not a link post)'}.
 - The phone number for call CTAs is: {phone}
 - Never include pricing language (per pricing policy).
+- Anti-fabrication: no invented customer stories, no invented dollar amounts, no invented local statistics. See the rules in the system message. When in doubt, use general framing instead of a specific number or anecdote.
 - All text must pass the brand voice quality checklist.
 """
 

@@ -131,6 +131,25 @@ CAT_BEST_FOR = "best_for"
 CAT_POST_COUNT = "post_count"
 CAT_LAST_POSTED = "last_posted"
 CAT_IMAGE_COUNT = "image_count"
+CAT_TAGS = "tags"
+CAT_WEIGHT = "weight"
+CAT_DIG_DEPTH = "dig_depth"
+CAT_REACH = "reach"
+CAT_CAPACITY = "capacity"
+CAT_HORSEPOWER = "horsepower"
+CAT_TAIL_SWING = "tail_swing"
+
+# Spec fields surfaced to the LLM in the compact catalog line and used as the
+# truth source for the angle-grounding check. Order here drives prompt order.
+CATALOG_SPEC_FIELDS: tuple[str, ...] = (
+    CAT_WEIGHT,
+    CAT_DIG_DEPTH,
+    CAT_REACH,
+    CAT_CAPACITY,
+    CAT_HORSEPOWER,
+    CAT_TAIL_SWING,
+    CAT_TAGS,
+)
 
 # Performance log columns.
 PL_OBJECTIVE = "objective"
@@ -392,12 +411,34 @@ def filter_eligible_catalog(
 
 # --- Step 6: Prompt assembly ---
 
+def _has_no_images(item: dict) -> bool:
+    """Return True when the catalog item has zero (or unset) image_count."""
+    raw = str(item.get(CAT_IMAGE_COUNT, "")).strip()
+    if raw == "":
+        return True
+    try:
+        return int(raw) <= 0
+    except ValueError:
+        # Unparseable image_count is treated as missing.
+        return True
+
+
 def _compact_catalog_line(item: dict, max_desc: int = CATALOG_DESC_CHARS) -> str:
-    """One-line summary of a catalog item for the LLM prompt."""
+    """One-line summary of a catalog item for the LLM prompt.
+
+    Includes spec fields (weight, dig_depth, reach, capacity, horsepower,
+    tail_swing, tags) when non-empty so the LLM has actual product attributes
+    to ground its angle in, rather than inferring from model names.
+    """
     desc = str(item.get(CAT_DESCRIPTION, "")).strip()
     if len(desc) > max_desc:
         desc = desc[: max_desc - 1].rstrip() + "…"
-    flags = " [RECENT — avoid unless necessary]" if item.get("_recently_posted") else ""
+    flag_tokens: list[str] = []
+    if item.get("_recently_posted"):
+        flag_tokens.append("RECENT — avoid unless necessary")
+    if _has_no_images(item):
+        flag_tokens.append("NO IMAGES — do not assign a media_format to this item")
+    flags = f" [{' | '.join(flag_tokens)}]" if flag_tokens else ""
     parts = [
         f"item_id={item.get(CAT_ITEM_ID, '')}",
         f"name={item.get(CAT_ITEM_NAME, '')}",
@@ -408,8 +449,12 @@ def _compact_catalog_line(item: dict, max_desc: int = CATALOG_DESC_CHARS) -> str
         f"post_count={item.get(CAT_POST_COUNT, '')}",
         f"last_posted={item.get(CAT_LAST_POSTED, '')}",
         f"image_count={item.get(CAT_IMAGE_COUNT, '')}",
-        f"description={desc}",
     ]
+    for spec in CATALOG_SPEC_FIELDS:
+        value = str(item.get(spec, "")).strip()
+        if value:
+            parts.append(f"{spec}={value}")
+    parts.append(f"description={desc}")
     return " | ".join(parts) + flags
 
 
@@ -511,7 +556,13 @@ def assemble_prompt(
         "  focus_equipment_id: a catalog item_id from the eligible list, OR empty "
         "string for content types that don't require equipment\n"
         "  angle: 1-2 sentence direction for the Drafter — the hook idea, framing, "
-        "or specific aspect to highlight\n"
+        "or specific aspect to highlight. CRITICAL: any product attribute or spec "
+        "mentioned in the angle (tail swing type, horsepower, weight, dig depth, "
+        "reach, capacity, etc.) must come from the catalog fields shown for the "
+        "chosen item. Do not invent, infer, or assume specs that are not in the "
+        "catalog record. If a spec is not listed for the item, do not reference it. "
+        "Generic framing (use cases, job context, seasonal relevance) does not "
+        "require catalog grounding — only specific product attribute claims do.\n"
         "  cta_type: one of " + cta_lines + "\n"
         "  media_format: one of " + ", ".join(MEDIA_FORMATS) + "\n"
         "  draft_notes: additional context for the Drafter (seasonal tie-in, spec to "
@@ -525,6 +576,12 @@ def assemble_prompt(
         "catalog items to feature, angles, CTAs, media formats, and scheduling. "
         "You return your plan as a single JSON array with no prose and no markdown "
         "fences. You never invent catalog items — pick only from the eligible list. "
+        "You never invent product attributes or specs — any spec or attribute named "
+        "in an angle (tail swing type, horsepower, weight, dig depth, reach, "
+        "capacity, attachment, etc.) must appear in the catalog fields shown for "
+        "that item. When the catalog doesn't list a spec, keep the angle to generic "
+        "framing (use cases, conditions, job context) and let the Drafter add "
+        "specifics from its own catalog lookup. "
         "You distribute posts evenly across the planning window."
     )
 
@@ -581,7 +638,9 @@ Use only these exact strings for content_type:
 
 # Eligible Catalog Items
 
-Pick focus_equipment_id values from this list. Items flagged [RECENT — avoid unless necessary] were posted within the cooldown window — skip them unless there's a strong reason. Items with image_count=0 are still valid (we can generate AI images).
+Pick focus_equipment_id values from this list. Items flagged RECENT were posted within the cooldown window — skip them unless there's a strong reason. Items flagged NO IMAGES have zero photos in the asset library; the downstream pipeline cannot produce media for these items, so do NOT pair them with a focus-equipment post. Prefer items with image_count > 0 for equipment-focused posts. If every remaining eligible item is flagged NO IMAGES, plan a non-equipment content type for that slot (Local Connection, Educational Tip, etc.) with focus_equipment_id empty instead.
+
+Note: creatomate_video also requires a source image. Never assign creatomate_video to a post with focus_equipment_id empty — pick image2_enhanced or another non-video format for non-equipment posts.
 
 {eligible_lines}
 
@@ -695,6 +754,211 @@ def validate_post(
         )
 
     return True, ""
+
+
+# --- Step 8b: Angle grounding check ---
+
+# Tail-swing phrases that may appear in an angle, mapped to the catalog
+# tail_swing substrings any one of which must be present for the claim to be
+# considered grounded. All matching is lowercased.
+_TAIL_SWING_CLAIMS: dict[str, tuple[str, ...]] = {
+    "zero tail swing": ("zero",),
+    "zero-tail swing": ("zero",),
+    "no tail swing": ("zero",),
+    "reduced tail swing": ("reduced", "short"),
+    "short tail swing": ("short", "reduced"),
+    "short-tail swing": ("short", "reduced"),
+    "tight tail swing": ("reduced", "zero", "short"),
+    "compact tail swing": ("reduced", "zero", "short"),
+    "conventional tail swing": ("conventional",),
+}
+
+# Numeric specs in the angle whose value must appear somewhere in the
+# catalog's spec / description / common_jobs / best_for / tags text.
+_NUMERIC_SPEC_RE = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)"           # value, allowing commas + decimals
+    r"\s*-?\s*"                       # optional hyphen (e.g. "21-ton")
+    r"(hp|horsepower|"
+    r"lbs?|pound|pounds|tons?|"
+    r"ft|feet|foot|inch|inches|"
+    r"gal|gallon|gallons|"
+    r"cu\s*yd|cubic\s*yard|cubic\s*yards|"
+    r"psi)"
+    r"\b",
+    re.IGNORECASE,
+)
+
+_ANGLE_FALLBACK_TEMPLATE = "Equipment spotlight — {item_name}"
+
+
+def _catalog_truth_haystack(item: dict) -> str:
+    """Lowered, concatenated text from catalog fields trusted as truth."""
+    parts: list[str] = []
+    for field in (
+        CAT_DESCRIPTION,
+        CAT_COMMON_JOBS,
+        CAT_BEST_FOR,
+        CAT_TAGS,
+        CAT_WEIGHT,
+        CAT_DIG_DEPTH,
+        CAT_REACH,
+        CAT_CAPACITY,
+        CAT_HORSEPOWER,
+        CAT_TAIL_SWING,
+    ):
+        value = str(item.get(field, "")).strip()
+        if value:
+            parts.append(value.lower())
+    return " | ".join(parts)
+
+
+def validate_angle_grounding(
+    angle: str, catalog_item: dict
+) -> tuple[bool, list[str]]:
+    """Check that spec/attribute claims in the angle match the catalog record.
+
+    Returns (is_grounded, violations). When `is_grounded` is True, `violations`
+    is empty. When False, `violations` lists each specific term that could not
+    be reconciled with the catalog item.
+
+    Generic framing (use cases, conditions, job context) is unconstrained —
+    only concrete attribute claims (tail swing type, numeric spec values) are
+    checked.
+    """
+    angle_text = str(angle or "").strip()
+    if not angle_text:
+        return True, []
+
+    angle_lower = angle_text.lower()
+    cat_tail = str(catalog_item.get(CAT_TAIL_SWING, "")).strip().lower()
+    catalog_haystack = _catalog_truth_haystack(catalog_item)
+
+    violations: list[str] = []
+
+    # --- Tail-swing check ---
+    for phrase, required_any in _TAIL_SWING_CLAIMS.items():
+        if phrase in angle_lower:
+            if not any(token in cat_tail for token in required_any):
+                cat_display = catalog_item.get(CAT_TAIL_SWING, "") or "(not specified)"
+                violations.append(
+                    f"angle claims {phrase!r} but catalog tail_swing is {cat_display!r}"
+                )
+
+    # --- Numeric-spec check ---
+    # Each (value, unit) extracted must have its value appear in the catalog
+    # truth haystack. We strip commas before comparison so "51,940" and "51940"
+    # both match the user-facing form in the catalog.
+    catalog_digits = re.sub(r",", "", catalog_haystack)
+    seen: set[tuple[str, str]] = set()
+    for match in _NUMERIC_SPEC_RE.finditer(angle_text):
+        raw_value = match.group(1)
+        unit = re.sub(r"\s+", " ", match.group(2).lower().strip())
+        bare_value = raw_value.replace(",", "")
+        key = (bare_value, unit)
+        if key in seen:
+            continue
+        seen.add(key)
+        if bare_value not in catalog_haystack and bare_value not in catalog_digits:
+            violations.append(
+                f"angle mentions {match.group(0)!r} but value {bare_value!r} "
+                f"does not appear in the catalog record"
+            )
+
+    return (not violations), violations
+
+
+# --- Image-coverage / video-without-equipment enforcement ---
+
+def enforce_image_coverage(
+    posts: list[dict], catalog_by_id: dict[str, dict]
+) -> tuple[list[dict], list[str]]:
+    """Drop posts that point at a 0-image catalog item with a media_format set.
+
+    The Drafter cannot produce media for an equipment-focused post when the
+    catalog item has zero images in the asset library — it falls through to a
+    caption-only draft, which silently breaks the feed's media expectation.
+    Posts in that state are dropped here and reported via warnings; valid
+    posts are returned in order.
+    """
+    kept: list[dict] = []
+    warnings: list[str] = []
+    for post in posts:
+        focus_id = str(post.get(CQ_FOCUS_EQUIPMENT, "")).strip()
+        media_format = str(post.get(CQ_MEDIA_FORMAT, "")).strip()
+        if not focus_id or not media_format:
+            kept.append(post)
+            continue
+        item = catalog_by_id.get(focus_id)
+        if item is None or not _has_no_images(item):
+            kept.append(post)
+            continue
+        scheduled = post.get(CQ_SCHEDULED, "")
+        warnings.append(
+            f"post for focus_equipment_id={focus_id!r} dropped: "
+            f"catalog item has image_count=0 but media_format="
+            f"{media_format!r} requires a source image "
+            f"(scheduled_datetime={scheduled!r})"
+        )
+    return kept, warnings
+
+
+def enforce_video_requires_equipment(
+    posts: list[dict], replacement_format: str = "image2_enhanced"
+) -> list[str]:
+    """Reassign creatomate_video posts that have no focus_equipment_id.
+
+    creatomate_video needs a source image (the Equipment-Photo template
+    field), so it cannot run on a post without focus_equipment_id. We
+    rewrite media_format in place to a non-video alternative and emit a
+    warning. Returns warnings.
+    """
+    warnings: list[str] = []
+    for post in posts:
+        if str(post.get(CQ_MEDIA_FORMAT, "")).strip() != "creatomate_video":
+            continue
+        if str(post.get(CQ_FOCUS_EQUIPMENT, "")).strip():
+            continue
+        scheduled = post.get(CQ_SCHEDULED, "")
+        post[CQ_MEDIA_FORMAT] = replacement_format
+        # text_overlay is derived from media_format; refresh it so the field
+        # downstream consumers read stays consistent.
+        post[CQ_TEXT_OVERLAY] = derive_text_overlay(replacement_format)
+        warnings.append(
+            f"post with empty focus_equipment_id had media_format="
+            f"'creatomate_video' (requires a source image) — reassigned to "
+            f"{replacement_format!r} (scheduled_datetime={scheduled!r})"
+        )
+    return warnings
+
+
+def apply_angle_grounding_check(
+    posts: list[dict], catalog_by_id: dict[str, dict]
+) -> list[str]:
+    """For each post with a focus_equipment_id, verify the angle is grounded.
+
+    When ungrounded, replace the angle in place with a generic fallback
+    referencing the catalog item_name. Returns a list of warning strings —
+    one per post whose angle was replaced.
+    """
+    warnings: list[str] = []
+    for post in posts:
+        focus_id = str(post.get(CQ_FOCUS_EQUIPMENT, "")).strip()
+        if not focus_id:
+            continue
+        item = catalog_by_id.get(focus_id)
+        if item is None:
+            continue
+        angle = str(post.get(CQ_ANGLE, ""))
+        grounded, violations = validate_angle_grounding(angle, item)
+        if grounded:
+            continue
+        item_name = str(item.get(CAT_ITEM_NAME, "")).strip() or focus_id
+        post[CQ_ANGLE] = _ANGLE_FALLBACK_TEMPLATE.format(item_name=item_name)
+        row_id = post.get(CQ_ROW_ID, "") or f"focus={focus_id}"
+        warnings.append(
+            f"{row_id}: angle replaced with fallback — {'; '.join(violations)}"
+        )
+    return warnings
 
 
 # --- Step 9: Enforce hard constraints ---
@@ -1024,6 +1288,17 @@ def run(dry_run: bool = False) -> dict:
         else:
             validation_warnings.append(f"post[{idx}] dropped: {reason}")
 
+    # --- Step 8b: image-coverage + video-requires-equipment enforcement ---
+    catalog_by_id = {
+        str(item.get(CAT_ITEM_ID, "")): item for item in eligible_items
+    }
+    valid_posts, image_coverage_warnings = enforce_image_coverage(
+        valid_posts, catalog_by_id
+    )
+    validation_warnings.extend(image_coverage_warnings)
+    video_focus_warnings = enforce_video_requires_equipment(valid_posts)
+    validation_warnings.extend(video_focus_warnings)
+
     if not valid_posts:
         return {
             "status": "success",
@@ -1052,6 +1327,14 @@ def run(dry_run: bool = False) -> dict:
 
     # --- Step 10: derived fields ---
     valid_posts = assign_row_ids(valid_posts)
+
+    # --- Step 10b: angle grounding check ---
+    # catalog_by_id was built earlier alongside image-coverage enforcement.
+    grounding_warnings = apply_angle_grounding_check(valid_posts, catalog_by_id)
+    if grounding_warnings:
+        for w in grounding_warnings:
+            print(f"[strategist] angle grounding: {w}", file=sys.stderr)
+    validation_warnings.extend(grounding_warnings)
 
     # --- Step 11: write to queue ---
     if not dry_run:

@@ -433,6 +433,324 @@ def test_validate_post_object() -> None:
     )
 
 
+def _spec_item() -> dict:
+    """Catalog row mirroring the TES-018 live record (Conventional tail swing)."""
+    return {
+        strategist.CAT_ITEM_ID: "TES-018",
+        strategist.CAT_ITEM_NAME: "Excavator - 50K - 210G/Zaxis 210",
+        strategist.CAT_CATEGORY: "Full Size Excavator (75 - 210)",
+        strategist.CAT_MODEL: "Zaxis 210",
+        strategist.CAT_STATUS: "active",
+        strategist.CAT_DESCRIPTION: (
+            "John Deere 210G LC / Hitachi ZX210. Full-size 21-ton excavator with "
+            "manual/hydraulic thumb. 6.8L PowerTech engine."
+        ),
+        strategist.CAT_COMMON_JOBS: "Heavy construction, demolition, land clearing",
+        strategist.CAT_BEST_FOR: "Large-scale excavation, deep trenching",
+        strategist.CAT_TAGS: "excavator, full-size, John Deere, 210G, Hitachi, ZX210, thumb",
+        strategist.CAT_WEIGHT: "51,940 lbs",
+        strategist.CAT_DIG_DEPTH: "21 feet",
+        strategist.CAT_REACH: "32' 1\" at ground level",
+        strategist.CAT_CAPACITY: "34,171 lbf bucket digging force / 108 gal fuel tank",
+        strategist.CAT_HORSEPOWER: "159 HP",
+        strategist.CAT_TAIL_SWING: "Conventional",
+    }
+
+
+def test_compact_catalog_line_includes_specs() -> None:
+    item = _spec_item()
+    line = strategist._compact_catalog_line(item)
+    # Every populated spec field must appear in the prompt line so the LLM
+    # has actual product attributes to ground its angle in. The whole point
+    # of this test is to lock that behaviour in.
+    needed_fragments = [
+        "weight=51,940 lbs",
+        "dig_depth=21 feet",
+        "horsepower=159 HP",
+        "tail_swing=Conventional",
+        "capacity=34,171 lbf",
+        "tags=excavator",
+    ]
+    missing = [frag for frag in needed_fragments if frag not in line]
+    _check(
+        "11. compact_catalog_line includes spec fields when non-empty",
+        not missing,
+        f"missing fragments: {missing}",
+    )
+
+
+def test_compact_catalog_line_omits_empty_specs() -> None:
+    item = {
+        strategist.CAT_ITEM_ID: "TES-X",
+        strategist.CAT_ITEM_NAME: "Plain Item",
+        strategist.CAT_CATEGORY: "Cat",
+        strategist.CAT_DESCRIPTION: "minimal record",
+    }
+    line = strategist._compact_catalog_line(item)
+    # No spec fields set, so they must not appear as empty fragments.
+    bad = [frag for frag in (
+        "weight=", "dig_depth=", "reach=", "capacity=",
+        "horsepower=", "tail_swing=", "tags=",
+    ) if frag in line]
+    _check(
+        "12. compact_catalog_line omits empty spec fields",
+        not bad,
+        f"unexpected empty spec fragments present: {bad}",
+    )
+
+
+def test_validate_angle_grounding_tail_swing() -> None:
+    item = _spec_item()  # tail_swing=Conventional
+
+    grounded_generic = strategist.validate_angle_grounding(
+        "Show the 210G handling foundation work on a tight residential lot.",
+        item,
+    )
+    grounded_truth = strategist.validate_angle_grounding(
+        "Highlight the conventional tail swing tradeoff for large-scale digs.",
+        item,
+    )
+    bad_reduced = strategist.validate_angle_grounding(
+        "Full-size excavator power in a reduced tail swing package for urban sites.",
+        item,
+    )
+    bad_zero = strategist.validate_angle_grounding(
+        "Zero tail swing makes the 210G perfect for working close to structures.",
+        item,
+    )
+
+    ok_generic, _ = grounded_generic
+    ok_truth, _ = grounded_truth
+    ok_reduced, vio_reduced = bad_reduced
+    ok_zero, vio_zero = bad_zero
+
+    _check(
+        "13. validate_angle_grounding — tail-swing claims must match catalog field",
+        ok_generic
+        and ok_truth
+        and not ok_reduced
+        and not ok_zero
+        and any("reduced tail swing" in v.lower() for v in vio_reduced)
+        and any("zero tail swing" in v.lower() for v in vio_zero),
+        f"generic={ok_generic}, truth={ok_truth}, reduced={ok_reduced} "
+        f"({vio_reduced!r}), zero={ok_zero} ({vio_zero!r})",
+    )
+
+
+def test_validate_angle_grounding_numeric() -> None:
+    item = _spec_item()  # weight 51,940 lbs, dig_depth 21 feet, horsepower 159 HP
+
+    grounded_hp = strategist.validate_angle_grounding(
+        "Pitch the 159 HP engine for deep utility digs.",
+        item,
+    )
+    grounded_dig = strategist.validate_angle_grounding(
+        "Reach down to 21 feet on footer cuts.",
+        item,
+    )
+    bad_weight = strategist.validate_angle_grounding(
+        "60,000 lbs of operating weight stays planted on uneven ground.",
+        item,
+    )
+    bad_hp = strategist.validate_angle_grounding(
+        "200 HP gives this 210G the headroom others lack.",
+        item,
+    )
+
+    ok_hp, _ = grounded_hp
+    ok_dig, _ = grounded_dig
+    ok_weight, vio_weight = bad_weight
+    ok_hp_bad, vio_hp_bad = bad_hp
+
+    _check(
+        "14. validate_angle_grounding — numeric spec values must appear in catalog",
+        ok_hp
+        and ok_dig
+        and not ok_weight
+        and not ok_hp_bad
+        and any("60000" in v or "60,000" in v for v in vio_weight)
+        and any("200" in v for v in vio_hp_bad),
+        f"hp={ok_hp}, dig={ok_dig}, weight={ok_weight} ({vio_weight!r}), "
+        f"hp_bad={ok_hp_bad} ({vio_hp_bad!r})",
+    )
+
+
+def test_apply_angle_grounding_check_replaces_and_warns() -> None:
+    item = _spec_item()
+    catalog_by_id = {item[strategist.CAT_ITEM_ID]: item}
+
+    posts = [
+        # Bad — false tail swing claim, must be rewritten.
+        {
+            strategist.CQ_ROW_ID: "STR-20260529-FB-01",
+            strategist.CQ_FOCUS_EQUIPMENT: "TES-018",
+            strategist.CQ_ANGLE: (
+                "Full-size excavator power in a reduced tail swing package."
+            ),
+        },
+        # Good — generic framing, must be left untouched.
+        {
+            strategist.CQ_ROW_ID: "STR-20260530-FB-01",
+            strategist.CQ_FOCUS_EQUIPMENT: "TES-018",
+            strategist.CQ_ANGLE: "Highlight the machine on tight downtown jobs.",
+        },
+        # No focus equipment — must be left untouched.
+        {
+            strategist.CQ_ROW_ID: "STR-20260601-GBP-01",
+            strategist.CQ_FOCUS_EQUIPMENT: "",
+            strategist.CQ_ANGLE: "Local development boom drives demand.",
+        },
+    ]
+
+    warnings = strategist.apply_angle_grounding_check(posts, catalog_by_id)
+
+    rewritten_angle = posts[0][strategist.CQ_ANGLE]
+    untouched_good = posts[1][strategist.CQ_ANGLE]
+    untouched_nofocus = posts[2][strategist.CQ_ANGLE]
+
+    _check(
+        "15. apply_angle_grounding_check — rewrites bad angle, warns, leaves good ones",
+        len(warnings) == 1
+        and rewritten_angle.startswith("Equipment spotlight —")
+        and item[strategist.CAT_ITEM_NAME] in rewritten_angle
+        and untouched_good == "Highlight the machine on tight downtown jobs."
+        and untouched_nofocus == "Local development boom drives demand."
+        and "STR-20260529-FB-01" in warnings[0],
+        f"warnings={warnings!r}, rewritten={rewritten_angle!r}, "
+        f"good={untouched_good!r}, nofocus={untouched_nofocus!r}",
+    )
+
+
+def test_compact_catalog_line_flags_zero_image_items() -> None:
+    item_with_images = {
+        strategist.CAT_ITEM_ID: "TES-A",
+        strategist.CAT_ITEM_NAME: "Has Images",
+        strategist.CAT_CATEGORY: "Cat",
+        strategist.CAT_DESCRIPTION: "desc",
+        strategist.CAT_IMAGE_COUNT: "3",
+    }
+    item_zero_int = dict(item_with_images,
+                         **{strategist.CAT_ITEM_ID: "TES-B",
+                            strategist.CAT_IMAGE_COUNT: "0"})
+    item_empty_str = dict(item_with_images,
+                          **{strategist.CAT_ITEM_ID: "TES-C",
+                             strategist.CAT_IMAGE_COUNT: ""})
+    item_bogus = dict(item_with_images,
+                      **{strategist.CAT_ITEM_ID: "TES-D",
+                         strategist.CAT_IMAGE_COUNT: "n/a"})
+
+    line_ok = strategist._compact_catalog_line(item_with_images)
+    line_zero = strategist._compact_catalog_line(item_zero_int)
+    line_empty = strategist._compact_catalog_line(item_empty_str)
+    line_bogus = strategist._compact_catalog_line(item_bogus)
+
+    # Item with images: no NO IMAGES flag.
+    # Items without images (zero, empty, unparseable): NO IMAGES flag present.
+    _check(
+        "16. compact_catalog_line — NO IMAGES flag on 0 / empty / unparseable, "
+        "absent on items with images",
+        "NO IMAGES" not in line_ok
+        and "NO IMAGES" in line_zero
+        and "NO IMAGES" in line_empty
+        and "NO IMAGES" in line_bogus,
+        f"ok={line_ok!r}, zero={line_zero!r}, empty={line_empty!r}, "
+        f"bogus={line_bogus!r}",
+    )
+
+
+def test_enforce_image_coverage_drops_zero_image_media_posts() -> None:
+    catalog_by_id = {
+        "TES-IMG": {
+            strategist.CAT_ITEM_ID: "TES-IMG",
+            strategist.CAT_ITEM_NAME: "Has Images",
+            strategist.CAT_IMAGE_COUNT: "5",
+        },
+        "TES-NOIMG": {
+            strategist.CAT_ITEM_ID: "TES-NOIMG",
+            strategist.CAT_ITEM_NAME: "Zero Images",
+            strategist.CAT_IMAGE_COUNT: "0",
+        },
+        "TES-EMPTY": {
+            strategist.CAT_ITEM_ID: "TES-EMPTY",
+            strategist.CAT_ITEM_NAME: "Empty Count",
+            strategist.CAT_IMAGE_COUNT: "",
+        },
+    }
+    posts = [
+        # Good — focus has images.
+        {strategist.CQ_FOCUS_EQUIPMENT: "TES-IMG",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_SCHEDULED: "2026-05-28T09:00:00-04:00"},
+        # Bad — focus has zero images and a media format is set.
+        {strategist.CQ_FOCUS_EQUIPMENT: "TES-NOIMG",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_text_overlay",
+         strategist.CQ_SCHEDULED: "2026-05-28T13:00:00-04:00"},
+        # Bad — focus has empty image_count and a media format is set.
+        {strategist.CQ_FOCUS_EQUIPMENT: "TES-EMPTY",
+         strategist.CQ_MEDIA_FORMAT: "image2_text_overlay",
+         strategist.CQ_SCHEDULED: "2026-05-28T18:00:00-04:00"},
+        # Good — no focus, media format set (separate check handles video case).
+        {strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_SCHEDULED: "2026-05-29T09:00:00-04:00"},
+    ]
+
+    kept, warnings = strategist.enforce_image_coverage(posts, catalog_by_id)
+    kept_focuses = [p.get(strategist.CQ_FOCUS_EQUIPMENT) for p in kept]
+
+    _check(
+        "17. enforce_image_coverage — drops zero-image media posts, keeps the rest",
+        len(kept) == 2
+        and kept_focuses == ["TES-IMG", ""]
+        and len(warnings) == 2
+        and any("TES-NOIMG" in w for w in warnings)
+        and any("TES-EMPTY" in w for w in warnings),
+        f"kept={kept_focuses}, warnings={warnings}",
+    )
+
+
+def test_enforce_video_requires_equipment_reassigns_when_focus_empty() -> None:
+    posts = [
+        # Bad — creatomate_video with no focus_equipment_id.
+        {strategist.CQ_PLATFORM: "facebook",
+         strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_video",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T18:15:00-04:00"},
+        # Good — creatomate_video with a focus equipment.
+        {strategist.CQ_PLATFORM: "facebook",
+         strategist.CQ_FOCUS_EQUIPMENT: "TES-018",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_video",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-29T18:15:00-04:00"},
+        # Good — non-video media format with no focus.
+        {strategist.CQ_PLATFORM: "instagram",
+         strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-30T09:00:00-04:00"},
+    ]
+
+    warnings = strategist.enforce_video_requires_equipment(posts)
+
+    bad_post = posts[0]
+    good_video_post = posts[1]
+    untouched_post = posts[2]
+
+    _check(
+        "18. enforce_video_requires_equipment — reassigns video on focus-less rows, "
+        "leaves video-with-focus and non-video rows untouched",
+        len(warnings) == 1
+        and bad_post[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced"
+        and bad_post[strategist.CQ_TEXT_OVERLAY] == "FALSE"
+        and good_video_post[strategist.CQ_MEDIA_FORMAT] == "creatomate_video"
+        and untouched_post[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced",
+        f"warnings={warnings}, bad_fmt={bad_post[strategist.CQ_MEDIA_FORMAT]!r}, "
+        f"good_fmt={good_video_post[strategist.CQ_MEDIA_FORMAT]!r}, "
+        f"untouched_fmt={untouched_post[strategist.CQ_MEDIA_FORMAT]!r}",
+    )
+
+
 def test_dry_run_full(config) -> None:  # type: ignore[no-untyped-def]
     # =================================================================
     # INTEGRATION TEST — calls the live Anthropic API. COSTS MONEY.
@@ -521,6 +839,14 @@ def run_tests() -> int:
     test_timing_gap_enforcement()
     test_video_cap_enforcement()
     test_validate_post_object()
+    test_compact_catalog_line_includes_specs()
+    test_compact_catalog_line_omits_empty_specs()
+    test_validate_angle_grounding_tail_swing()
+    test_validate_angle_grounding_numeric()
+    test_apply_angle_grounding_check_replaces_and_warns()
+    test_compact_catalog_line_flags_zero_image_items()
+    test_enforce_image_coverage_drops_zero_image_media_posts()
+    test_enforce_video_requires_equipment_reassigns_when_focus_empty()
 
     print()
     print("Integration test (calls Anthropic API — COSTS MONEY):")

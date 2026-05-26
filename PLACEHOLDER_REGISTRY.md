@@ -121,7 +121,7 @@
 # skills.critic_checklist             → 1rMnX99R75yJJPZe4HoXcKaCv4zH-3jnl
 # skills.image_prompt_universal       → 1IV61Q6EjjjxK1zDuTEMP--pRWnmcw5XO
 # skills.image_prompt_social          → 1_9HzTGdWOIN3qAhaQmg_3PORCB0T-YPA
-# skills.brand_voice                  → 1HKBeCVpqTdh_J4MNepG5q39CmjBRcY0MD4D_kHggpAQ
+# skills.brand_voice                  → 1FrDMG_dqT2iXANnoUe_tiuY6ltUUS9xuG0PkmBbRh1w
 # skills.strategy_guidance            → 1rEDcIkcp1ZZsJsT2_SqJQ_VOwdY6AwxE
 # skills.few_shot_library             → 16vGjPbd9fWz4GjDFBpr4o5TH-wdzYT_GOhvwXeqrvQg
 
