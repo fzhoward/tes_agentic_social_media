@@ -19,10 +19,10 @@ Document the technical constraints, content behaviors, and publishing mechanics 
 
 ### Character Limits
 
-| Element | Limit | Truncation Behavior |
+| Element | Target Length | Truncation Behavior |
 |---------|-------|-------------------|
-| Post caption | 63,206 characters | Truncated at ~477 characters in feed with "See more" link. First 1-2 lines must carry the hook. |
-| First comment | 8,000 characters | Not truncated in most views. |
+| Post caption | 500-1500 characters | Truncated at ~477 characters in feed with "See more" link. First 1-2 lines must carry the hook. |
+| First comment | 200 characters | Not truncated in most views. |
 | Link preview title | ~88 characters | Truncated with ellipsis. |
 | Link preview description | ~300 characters | Truncated. |
 
@@ -64,10 +64,10 @@ Facebook Pages support: text, photo, video, link (with preview), carousel, event
 
 ### Character Limits
 
-| Element | Limit | Truncation Behavior |
+| Element | Target Length | Truncation Behavior |
 |---------|-------|-------------------|
-| Caption | 2,200 characters | Truncated at ~125 characters in feed with "...more" link. First line must carry the hook. |
-| First comment | 2,200 characters | Not truncated. |
+| Caption | 800-1500 characters | Truncated at ~125 characters in feed with "...more" link. First line must carry the hook. |
+| First comment | 300 characters | Not truncated. |
 | Bio link | 1 URL in bio (or link-in-bio tool) | N/A |
 
 ### Media Specifications
@@ -120,12 +120,12 @@ Instagram supports: single image, carousel (up to 20 slides), Reels (short video
 
 ### Character Limits
 
-| Element | Limit | Truncation Behavior |
+| Element | Target Length | Truncation Behavior |
 |---------|-------|-------------------|
-| Post body | 1,500 characters | Truncated at ~150-200 characters in the GBP panel with "Read more" link. |
+| Post body | 150-200 characters | Truncated at ~150-200 characters in the GBP panel with "Read more" link. |
 | Post title (Offer/Event only) | 58 characters | Hard limit. |
 | Event start/end date | Required for Event posts | Date picker format. |
-| Offer terms | 1,500 characters | Truncated similarly to post body. |
+| Offer terms | 150-200 characters | Truncated similarly to post body. |
 
 ### Media Specifications
 
@@ -188,9 +188,9 @@ Only one button per post. The Strategist or Drafter selects the button type base
 
 ## Cross-Platform Summary
 
-| Constraint | Facebook | Instagram | GBP |
+| Caption Langth Targets | Facebook | Instagram | GBP |
 |-----------|----------|-----------|-----|
-| Caption limit | 63,206 chars | 2,200 chars | 1,500 chars |
+| Caption limit | 500-1500 chars | 800-1500 chars | 150-200 chars |
 | Feed truncation | ~477 chars | ~125 chars | ~150-200 chars |
 | Recommended image size | 1080 x 1350 (4:5) | 1080 x 1350 (4:5) | 1200 x 900 (4:3) |
 | Image required to schedule | No | **Yes — SocialBu rejects the API call without media** | No |
