@@ -1,0 +1,218 @@
+# Drafter Agent — Workflow SOP
+
+*V1 — produces the complete post draft: caption, CTA, hook, media asset, and first comment*
+
+## Role
+
+The Drafter takes a single planned Content Queue row and produces the finished draft: platform-tailored caption, CTA, media asset (image or video), and first comment (when applicable). The Drafter executes — it does not make strategic decisions. The Strategist has already decided what to post, on which platform, with what objective, content type, media format, and CTA type. The Drafter's job is to write and produce it at the quality bar defined by the brand voice and skill files.
+
+## Trigger
+
+| Trigger | Source | Frequency |
+|---------|--------|-----------|
+| Queue-driven | Make.com scenario | Fires when a Content Queue row has `status = planned` and `scheduled_datetime` is within the lead-time window (e.g., 36 hours out) |
+| Re-draft (caption) | Make.com scenario | Fires when the owner selects "Edit caption" or "Regenerate all" on the Slack approval card |
+| Re-draft (media only) | Make.com scenario | Fires when the owner selects "Regenerate media" on the Slack approval card |
+| Revision (from Critic) | Make.com scenario | Fires when the Critic returns a `soft_fail` verdict with fix instructions |
+
+## Inputs
+
+| Input | Source | Purpose |
+|-------|--------|---------|
+| Content Queue row | Google Sheets | The planned post assignment: platform, objective, content_type, focus_equipment_id, angle, cta_type, media_format, text_overlay, source_image_id, draft_notes |
+| Catalog item record | Google Sheets (if `focus_equipment_id` is set) | Item specs, description, tags, images |
+| Brand voice file | Drive (per-business instance) | Voice rules, formatting rules, post objective rules, banned language, CTA phrasing |
+| Hook Creation Skill | Drive (portable) | Generates scored hooks for caption and image overlay |
+| CTA Skill | Drive (portable) | CTA phrasing patterns and rules |
+| Image Prompt — Social | Drive (portable) | Prompt template for Image 2 pipeline |
+| Image Prompt — Universal Preamble | Drive (portable) | Prepended to all image generation prompts |
+| Platform Style Skill | Drive (portable) | Character limits, platform constraints |
+| Content Type Definitions | Drive (portable) | Content type definition for the assigned type |
+| Business config | `business_config.yaml` | Phone number, website, DM platforms, contact info for CTA phrasing |
+| Source photo | Google Drive (file ID from catalog or `source_image_id`) | Input to the image generation pipeline |
+| Critic fix instructions | Make.com (if revision round) | Specific fixes to apply from the previous Critic evaluation |
+
+## Outputs
+
+| Output | Destination | Description |
+|--------|-------------|-------------|
+| Updated Content Queue row | Google Sheets | Caption, first_comment, cta_text, media_url, hook_text, image_overlay_text, draft_rationale, media_format_used. Status updated to `drafted`. |
+| Generated media asset | Google Drive (`drive.generated_images_folder_id`) | The finished image or video file |
+
+## Processing Steps
+
+### 1. Load Context
+
+Read all inputs: the Content Queue row, the catalog item record (if applicable), the brand voice file, and all relevant skill files. If this is a revision round, also load the Critic's fix instructions.
+
+### 2. Generate Hooks
+
+Invoke the Hook Creation Skill to produce scored hooks for:
+
+- **Caption hook** — the opening line of the post caption
+- **Image overlay hook** — the text to overlay on the image (only when `text_overlay = true`)
+
+The Hook Creation Skill returns multiple candidates per channel with scores and a `recommended: true` flag. The Drafter uses the recommended hook. If no hook passes the minimum quality threshold, the Drafter uses the highest-scoring candidate and flags it in `draft_rationale`.
+
+### 3. Write Caption
+
+Write the caption body following the brand voice rules, content type definition, and post objective rules:
+
+**Caption structure:**
+```
+[Hook — prepended from Hook Creation Skill output]
+
+[Caption body — written by the Drafter]
+
+[CTA — phrased per CTA Skill rules, last element]
+```
+
+**Key rules (from brand voice and skill files):**
+- Caption body does NOT include its own opening hook (the hook is prepended)
+- Plain text only — no markdown, no emoji, no exclamation points, no em dashes, no hashtags
+- Vertical stack formatting — every content line followed by a blank line
+- Sentence length: median 8-12 words, max 18 words
+- At least 2 fragment lines (5 words or fewer)
+- Word count within target range for the post type and platform
+- Reading level: 6th-7th grade Flesch-Kincaid
+- One idea per post
+- No pricing language (per `strategy.pricing_in_posts` policy)
+
+**Objective-specific rules:**
+- Brand awareness: no conversion CTA, engagement CTA optional, looser voice
+- Lead generation: call or DM CTA required, CTA last, name situation before the ask
+- Link post: create tension the linked content resolves, no URL in caption, CTA directs to first comment
+- Advisory post: deliver one complete practical takeaway, no link reference
+
+### 4. Phrase CTA
+
+Using the CTA Skill, phrase the assigned `cta_type` with:
+- The specific destination (phone number, DM prompt, first comment direction)
+- Business-specific values from `business_config.yaml` (phone, website, booking URL)
+- A reason to act that connects to the post content
+
+The CTA is the last element of the caption.
+
+### 5. Populate First Comment (Link Posts Only)
+
+For link posts (`cta_type = click`), populate the `first_comment` field with the blog URL and a short prefix (e.g., "Full post here: [URL]").
+
+### 6. Generate Media Asset
+
+Based on the assigned `media_format`, execute the appropriate pipeline:
+
+#### `image2_enhanced` (clean photo, no text)
+1. Retrieve the source photo from Google Drive
+2. Assemble the image prompt: Universal Preamble + Image Prompt Social Section B (clean photo)
+3. Optionally append the content type hint from the Image Prompt Social guidance table
+4. Send source photo + assembled prompt to OpenAI Image 2 `/images/edits` endpoint
+5. The code pipeline handles: resizing to target dimensions, logo overlay, format conversion
+
+#### `image2_text_overlay` (Image 2 photo + hook text)
+1. Retrieve the source photo from Google Drive
+2. Assemble the image prompt: Universal Preamble + Image Prompt Social Section A (text overlay), with `[HOOK_TEXT]` replaced by the recommended image overlay hook
+3. Optionally append the content type hint
+4. Send source photo + assembled prompt to OpenAI Image 2 `/images/edits` endpoint
+5. The code pipeline handles: resizing, logo overlay, format conversion
+
+#### `creatomate_text_overlay` (Creatomate template photo + hook text)
+1. Retrieve the source photo from Google Drive
+2. Upload/host the source photo at a URL accessible to Creatomate (or use Drive direct link if supported)
+3. Call the Creatomate API `POST /v1/renders` with:
+   - The text overlay template ID (from business config or system config)
+   - Dynamic field values: source image URL, hook text, any brand-specific values (colors, fonts)
+4. Poll for render completion or receive webhook callback
+5. Download the rendered output
+6. The code pipeline handles: logo overlay, format conversion
+
+#### `creatomate_video` (motion video from source still)
+1. Retrieve the source photo from Google Drive
+2. Upload/host the source photo at a URL accessible to Creatomate
+3. Call the Creatomate API `POST /v1/renders` with:
+   - The video template ID (from business config or system config)
+   - Dynamic field values: source image URL, any motion parameters
+4. Poll for render completion
+5. Download the rendered video
+6. The code pipeline handles: logo overlay (if applicable to video), format conversion
+
+### 7. Write Draft Rationale
+
+Write a 1-2 sentence note explaining the draft for the Critic and owner:
+- What angle was taken and why
+- Any quality concerns (thin experience input, low-scoring hooks, fallback image selection)
+- If this is a revision round: what was changed per the Critic's instructions
+
+### 8. Update Content Queue Row
+
+Write all outputs to the Content Queue row:
+- `caption`: Full caption (hook + body + CTA)
+- `first_comment`: Blog URL with prefix (link posts only, empty otherwise)
+- `cta_text`: The CTA line as a standalone field (for the Critic to evaluate independently)
+- `hook_text`: The caption hook used
+- `image_overlay_text`: The image overlay hook used (if text overlay, empty otherwise)
+- `media_url`: Drive file URL or ID of the generated media asset
+- `media_format_used`: The actual media format used (should match the assignment unless fallback occurred)
+- `draft_rationale`: The rationale note
+- `status`: Update to `drafted`
+
+## Revision Handling
+
+When the Critic returns a `soft_fail`, the Drafter receives:
+- The previous draft (full Content Queue row)
+- The Critic's `failed_checks` array with specific fix instructions
+
+The Drafter applies the specific fixes, re-runs any affected steps (e.g., if the CTA was wrong, re-phrase it; if the caption had banned language, rewrite that section), and resubmits. The Drafter does NOT regenerate the entire draft from scratch unless the issues are pervasive.
+
+For media regeneration requests (from the Slack approval card), the Drafter re-runs step 6 only, keeping the caption unchanged.
+
+## Autonomous Decisions
+
+- Exact wording of the caption body
+- Which hook candidate to use (within the Hook Creation Skill's scoring framework)
+- Source photo selection (if `source_image_id` is not pre-assigned by the Strategist)
+- Content type hint selection for the image prompt
+- How to apply Critic fix instructions
+
+## Human-in-Loop
+
+None at the drafting step. The draft goes to the Critic, then to Slack approval.
+
+## Error Handling
+
+| Error | Behavior |
+|-------|----------|
+| Catalog item not found | Log error, flag row as `hard_fail`, post to `{{SLACK_ERROR_CHANNEL}}` |
+| Source photo not accessible | Try alternate images from the catalog item. If none available, flag in `draft_rationale` and set Critic warning W1 |
+| Image 2 API failure | Retry once. If still failing, fall back to `creatomate_text_overlay` or `image2_enhanced` (depending on whether text overlay was assigned). Log the fallback in `draft_rationale`. |
+| Creatomate API failure | Retry once. If still failing, fall back to `image2_text_overlay` or `image2_enhanced`. Log the fallback. |
+| Creatomate template not found | Log error, fall back to Image 2 pipeline for this post. Flag in `draft_rationale`. |
+| Hook Creation Skill produces no passing hooks | Use highest-scoring candidate regardless of threshold. Flag in `draft_rationale`. |
+| Caption exceeds platform character limit | Trim and re-check. If still over after trimming, flag for Critic review. |
+
+## Failure Mode
+
+If the Drafter fails on a single row, that row stays at `status = planned` and Make.com can retry on the next trigger cycle. Other planned rows are unaffected. If the Drafter fails repeatedly on the same row, it eventually expires (scheduled_datetime passes) and the Strategist backfills the slot on its next run.
+
+## Config Dependencies
+
+| Config Path | Purpose |
+|-------------|---------|
+| `contact.phone` | Phone number for call CTAs |
+| `contact.website` | Website URL for visit CTAs |
+| `contact.booking_url` | Booking URL for book CTAs |
+| `contact.dm_platforms` | Which platforms support DM CTAs |
+| `contact.google_maps_url` | Google Maps URL for directions CTAs |
+| `catalog.primary_subject` | For image prompt placeholders |
+| `brand_visuals.typography_style` | For image prompt text overlay |
+| `brand_visuals.feel` | For image prompt brand feel |
+| `brand_visuals.logo_file_id` | Logo for code pipeline overlay |
+| `apis.image_generation_provider` | Which image API to call |
+| `apis.image_generation_model` | Model ID for Image 2 |
+| `apis.video_provider` | Creatomate |
+| `drive.generated_images_folder_id` | Where to save generated assets |
+| `strategy.pricing_in_posts` | Pricing policy |
+
+---
+
+*Drafter Agent — Workflow SOP v1*
+*Last updated: 2026-05-20*

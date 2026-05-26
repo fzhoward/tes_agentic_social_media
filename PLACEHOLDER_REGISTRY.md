@@ -112,7 +112,10 @@
 # catalog.image_folder_id             → 11tRhJWZaxijJsrsOlr1ukvW1jYaGYRLJOu6wkYVwi12jIZ1sjzwr9cbz4aA9yz0pb7h4sHtR
 # catalog.image_metadata_sheet_id     → 1mxuYmfs5bmp4wWECvp6zImns2U3EqaFLPagmZKiHCsM
 
-# --- Skill File IDs (loaded by skill_loader.py) ---
+# --- Skill File IDs (REFERENCE ONLY — canonical copies now live locally) ---
+# Skills and workflows are loaded from local .md files in skills/ and workflows/
+# by skill_loader.py. The Drive IDs below are retained for traceability to the
+# original documents but are no longer read by the loader.
 # skills.hook_creation                → 1eoqYP036gKFU3ZktZzg3wpISZfwI12eD
 # skills.gbp_post                     → 1836-0OdS-CxrQXqygCcoJM9-qoebJmx4
 # skills.cta                          → 1bgLqZhb4RPcPI07-EEchGJ78k25kR7vZ
@@ -272,9 +275,9 @@
 # Example: config.get("creatomate.equipment_post_image.templates") → dict of all 5 templates
 
 # --- Placeholder injection pattern ---
-# skill_loader.load("hook_creation") internally:
-#   1. Reads skills.hook_creation from config → gets file ID
-#   2. Downloads file content from Drive by that ID
+# skill_loader.load_skill("hook_creation") internally:
+#   1. Resolves path: skills/hook_creation.md (relative to project root)
+#   2. Reads file content from local filesystem
 #   3. Replaces all {{PLACEHOLDER}} tokens using the mapping in this document
 #   4. Returns the resolved text string
 

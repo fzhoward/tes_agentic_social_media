@@ -1,7 +1,7 @@
 """Tests for tools/skill_loader.py.
 
-Runs against real skill files and workflow SOPs in the TES Rentals Drive.
-Prerequisite: Run `python tools/google_auth.py` first to generate the token.
+Runs against the local skill files in skills/ and workflow SOPs in workflows/.
+No Drive access required.
 
 Run from the project root:
     python -m pytest tests/test_skill_loader.py -v
@@ -131,15 +131,15 @@ def test_caching(config):
     assert "skill:hook_creation" in skill_loader._cache_snapshot()
 
 
-def test_missing_skill_key(config):
-    with pytest.raises(KeyError):
+def test_missing_skill_file(config):
+    with pytest.raises(FileNotFoundError):
         skill_loader.load_skill("nonexistent_skill_name", config=config)
 
 
 def test_load_workflow_vs_skill_no_collision(config):
-    # 'strategy_guidance' exists under skills.* but not workflows.* in the
-    # TES config. Verify the cache namespaces skills and workflows separately,
-    # and that a name collision (if one ever existed) wouldn't cross-pollute.
+    # 'strategy_guidance' exists as a local skill file but not as a workflow.
+    # Verify the cache namespaces skills and workflows separately, and that
+    # a name collision (if one ever existed) wouldn't cross-pollute.
     skill_text = skill_loader.load_skill("strategy_guidance", config=config)
     assert isinstance(skill_text, str) and len(skill_text) > 0
 
@@ -147,9 +147,9 @@ def test_load_workflow_vs_skill_no_collision(config):
     assert "skill:strategy_guidance" in snapshot
     assert "workflow:strategy_guidance" not in snapshot
 
-    # Loading a workflow by the same name must hit the workflows.* config path,
-    # which doesn't exist here — proving the two namespaces are independent.
-    with pytest.raises(KeyError):
+    # Loading a workflow by the same name must look at workflows/strategy_guidance.md,
+    # which doesn't exist — proving the two namespaces are independent.
+    with pytest.raises(FileNotFoundError):
         skill_loader.load_workflow("strategy_guidance", config=config)
 
     # The failed workflow load must not have polluted the skill cache entry.

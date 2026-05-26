@@ -42,9 +42,11 @@ This system is designed to be portable. A different business should be able to s
 
 ### Skill Loading Pattern
 
-Agents don't read skill files from the local filesystem. They load them from Google Drive by file ID (listed in `business_config.yaml` under `skills.*`), using `tools/skill_loader.py`. The loader injects business config values into `{{PLACEHOLDER}}` tokens in the skill text before returning it.
+Skill files and workflow SOPs live in the repo as `.md` files under `skills/` and `workflows/`. Agents load them via `tools/skill_loader.py`, which resolves the path by convention: `load_skill("hook_creation")` reads `skills/hook_creation.md`, and `load_workflow("strategist")` reads `workflows/strategist.md`. The loader injects business config values into `{{PLACEHOLDER}}` tokens in the file text before returning it.
 
 Example: A skill file containing `{{BUSINESS_NAME}}` and `{{SERVICE_AREA}}` gets resolved to "T.E.S. Rentals" and "North Florida" at load time.
+
+The `skills.*` and `workflows.*` sections in `business_config.yaml` retain the original Drive file IDs for traceability but are no longer read by the loader.
 
 ### LLM Provider Routing
 
