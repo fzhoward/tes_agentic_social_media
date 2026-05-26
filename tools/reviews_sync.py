@@ -253,6 +253,35 @@ def fetch_all_reviews(
     return reviews
 
 
+# --- Batched append (avoid per-row write-quota churn) ---
+
+
+def _batch_append_rows(
+    sheets_service: Any,
+    spreadsheet_id: str,
+    tab_name: str,
+    rows: list[dict],
+) -> None:
+    """Append many rows in a single Sheets API call.
+
+    Avoids the per-minute write quota that bites when looping append_row over
+    dozens of rows. Column order is fixed by REVIEWS_HEADERS.
+    """
+    if not rows:
+        return
+    values = [[str(row.get(h, "")) for h in REVIEWS_HEADERS] for row in rows]
+    quoted_tab = sheets_helpers._quote_tab(tab_name)
+    sheets_helpers._execute_with_retry(
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=quoted_tab,
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": values},
+        )
+    )
+
+
 # --- Sheet creation (--create-sheet) ---
 
 
@@ -388,9 +417,9 @@ def run(dry_run: bool = False) -> dict:
             sheets_helpers.batch_update_cells(
                 reviews_sheet_id, REVIEWS_TAB, updates, service=sheets_service
             )
-        for new_row in new_rows_to_append:
-            sheets_helpers.append_row(
-                reviews_sheet_id, REVIEWS_TAB, new_row, service=sheets_service
+        if new_rows_to_append:
+            _batch_append_rows(
+                sheets_service, reviews_sheet_id, REVIEWS_TAB, new_rows_to_append
             )
 
         summary = _format_slack_summary(
