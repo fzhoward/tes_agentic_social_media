@@ -6,7 +6,7 @@
 
 Generate the image prompt sent to the image generation model (OpenAI Image 2 `/images/edits` endpoint) for every social media post across all platforms and content types. This file replaces the separate advisory post and link post image prompts with a single prompt that branches based on whether the Strategist assigned text overlay for the post.
 
-This is a portable skill. It contains no brand, industry, or business assumptions. Business-specific values are injected via `{{PLACEHOLDER}}` syntax from `business_config.yaml`.
+This is a portable skill. It contains no brand, industry, or business assumptions. Business-specific values are injected via placeholder syntax (e.g. `BUSINESS_NAME`) from `business_config.yaml`.
 
 ## How This File Is Used
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 from tools.config_loader import Config, load_config
@@ -125,7 +126,19 @@ def _load_resolved(
             f"Skill/workflow file not found at expected path: {file_path}"
         )
 
-    raw_text = file_path.read_text(encoding="utf-8")
+    try:
+        raw_text = file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        # Lightweight insurance against transient filesystem hiccups (NFS,
+        # temporary locks). One retry, then let the exception propagate.
+        print(
+            f"[skill_loader] read failed for {file_path} "
+            f"({type(exc).__name__}: {exc}) — retrying once",
+            file=sys.stderr,
+        )
+        time.sleep(1)
+        raw_text = file_path.read_text(encoding="utf-8")
+
     resolved = _inject_placeholders(raw_text, config)
     _CACHE[cache_key] = resolved
     return resolved

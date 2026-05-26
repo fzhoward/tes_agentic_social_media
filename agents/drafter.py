@@ -49,7 +49,7 @@ from tools.config_loader import Config, load_config
 
 ET = ZoneInfo("America/New_York")
 
-ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 ANTHROPIC_MAX_TOKENS: int = 4096
 
 TMP_DIR: str = ".tmp"
@@ -66,6 +66,38 @@ PLATFORM_FEED_TRUNCATION: dict[str, int] = {
     "facebook": 477,
     "instagram": 125,
     "gbp": 175,
+}
+
+# Human-readable platform names used when substituting {{PLATFORM}} into
+# image prompts. Falls back to .title() for any unmapped key.
+PLATFORM_DISPLAY_NAMES: dict[str, str] = {
+    "facebook": "Facebook",
+    "instagram": "Instagram",
+    "gbp": "Google Business Profile",
+}
+
+# Per-platform target caption length ranges (full caption: hook + body + CTA).
+# Enforced via prompt-level instruction in build_drafter_messages — the Critic
+# enforces it at QA time.
+CAPTION_TARGET_RANGE: dict[str, tuple[int, int]] = {
+    "facebook": (500, 1500),
+    "instagram": (800, 1500),
+    "gbp": (150, 200),
+}
+
+# Strict output rules per CTA type. Enforced via prompt-level instruction in
+# build_drafter_messages so the LLM doesn't drift into hybrid CTAs (e.g.,
+# adding a phone number to a "save" CTA because it saw one in the brand voice).
+CTA_OUTPUT_RULES: dict[str, str] = {
+    "call": "must include the phone number; must not include other actions",
+    "dm": "must direct to DM/message; must not include phone number or URL",
+    "save": "must direct reader to save the post; must NOT include phone number, URL, or any other action",
+    "comment": "must ask a question or prompt engagement; must not include phone number or URL",
+    "click": "must direct to first comment for the link; must not include phone number",
+    "visit": "must direct to website; must not include phone number",
+    "book": "must direct to booking URL; must not include phone number",
+    "directions": "must direct to Google Maps/listing; must not include phone number",
+    "none": "no CTA at all; caption ends with the last content line (cta_text must be empty string)",
 }
 
 # Phrases the brand voice forbids. Lowercased substring match.
@@ -234,6 +266,20 @@ def contains_banned_chars(text: str) -> list[str]:
     if not text:
         return []
     return [c for c in BANNED_CHARS if c in text]
+
+
+def clean_overlay_text(text: str) -> str:
+    """Strip trailing sentence-fragment punctuation from overlay text.
+
+    Overlay text is a 3-7 word hook fragment — trailing periods, commas,
+    semicolons, and colons read as incomplete sentences when rendered into
+    Creatomate templates. Internal punctuation (intentional commas like
+    "Before you rent, read this") is preserved. Trailing '?' and '!' are
+    left alone — '!' is already banned elsewhere, '?' is a valid hook ending.
+    """
+    if not text:
+        return text
+    return text.rstrip().rstrip(".,;:").rstrip()
 
 
 def validate_overlay_hook(hook: str, text_overlay_flag: str) -> tuple[bool, str]:
@@ -625,8 +671,49 @@ def build_drafter_messages(
     char_limit = PLATFORM_CHAR_LIMITS.get(platform, 2200)
     feed_trunc = PLATFORM_FEED_TRUNCATION.get(platform, 125)
 
+    platform_display = {"gbp": "GBP"}.get(platform, platform.title() or platform)
+    target_range = CAPTION_TARGET_RANGE.get(platform)
+    if target_range is not None:
+        target_min, target_max = target_range
+        caption_target_block = (
+            f"Caption length target: your total caption (hook + body + CTA "
+            f"combined) for this {platform_display} post must be "
+            f"{target_min}–{target_max} characters. This is a hard "
+            f"target, not a guideline. Drafts outside this range will be "
+            f"rejected."
+        )
+        caption_target_reinforcement = (
+            f"- Caption length: your total caption for this "
+            f"{platform_display} post must be {target_min}–{target_max} "
+            f"characters. Treat this as a hard constraint."
+        )
+    else:
+        caption_target_block = ""
+        caption_target_reinforcement = ""
+
     platform_section = extract_platform_section(platform_style, platform)
     cta_section = extract_cta_section(cta_skill, cta_type)
+
+    cta_rules_list = "\n".join(
+        f"- {ct} → {rule}" for ct, rule in CTA_OUTPUT_RULES.items()
+    )
+    cta_rule_for_this_post = CTA_OUTPUT_RULES.get(
+        cta_type,
+        "(unknown CTA type — follow the CTA Rules section above exactly)",
+    )
+    cta_constraint_block = (
+        f"The assigned CTA type is \"{cta_type}\". Your CTA must follow the "
+        f"rules for this type exactly. Do not combine CTA types or add "
+        f"actions not specified for this type.\n\n"
+        f"Rules per CTA type:\n"
+        f"{cta_rules_list}\n\n"
+        f"For this post (cta_type={cta_type}): {cta_rule_for_this_post}"
+    )
+    cta_constraint_reinforcement = (
+        f"- CTA type is {cta_type} — follow the output rules for this type "
+        f"strictly. Do not add phone numbers, URLs, or other actions unless "
+        f"the CTA type explicitly requires them."
+    )
     hook_section = extract_hook_section(hook_skill, objective)
     content_type_section = extract_content_type_section(
         strategy_guidance, content_type,
@@ -714,11 +801,17 @@ CTA destinations available for this business:
   booking_url: {booking_url}
   google_maps_url: {maps_url}
 
+# CTA Output Constraint (cta_type={cta_type})
+
+{cta_constraint_block}
+
 # Platform Constraints ({platform})
 
 Full caption character limit: {char_limit}
 Feed truncation point (above the fold): ~{feed_trunc} chars
 Link behavior: {'in-caption button (GBP)' if platform == 'gbp' else 'first comment for FB/IG'}
+
+{caption_target_block}
 
 {platform_section}
 
@@ -751,6 +844,8 @@ Return exactly this JSON shape (no markdown fences, no commentary):
 - The phone number for call CTAs is: {phone}
 - Never include pricing language (per pricing policy).
 - Anti-fabrication: no invented customer stories, no invented dollar amounts, no invented local statistics. See the rules in the system message. When in doubt, use general framing instead of a specific number or anecdote.
+{caption_target_reinforcement}
+{cta_constraint_reinforcement}
 - All text must pass the brand voice quality checklist.
 """
 
@@ -859,9 +954,13 @@ def assemble_image_prompt(
     section = extract_image_prompt_section(image_prompt_social, text_overlay)
     if text_overlay:
         section = section.replace("[HOOK_TEXT]", overlay_hook or "")
-    section = section.replace("{{PLATFORM}}", platform or "")
+    platform_key = (platform or "").strip().lower()
+    platform_display = PLATFORM_DISPLAY_NAMES.get(
+        platform_key, platform_key.title() or platform_key,
+    )
+    section = section.replace("{{PLATFORM}}", platform_display)
     universal = (image_prompt_universal or "").replace(
-        "{{PLATFORM}}", platform or "",
+        "{{PLATFORM}}", platform_display,
     )
     if universal and section:
         return f"{universal.strip()}\n\n{section.strip()}"
@@ -1285,6 +1384,10 @@ def draft_single_row(
             "dry_run": dry_run,
         }
 
+    parsed["image_overlay_hook"] = clean_overlay_text(
+        str(parsed.get("image_overlay_hook", ""))
+    )
+
     issues, full_caption = validate_llm_output(
         parsed=parsed,
         text_overlay_flag=str(row.get(CQ_TEXT_OVERLAY, "")),
@@ -1359,7 +1462,7 @@ def draft_single_row(
             CQ_HOOK_TEXT: caption_hook,
             CQ_IMAGE_OVERLAY_TEXT: overlay_hook,
             CQ_MEDIA_URL: media_drive_id,
-            CQ_MEDIA_FORMAT_USED: media_format_used or media_format,
+            CQ_MEDIA_FORMAT_USED: media_format_used,
             CQ_DRAFT_RATIONALE: draft_rationale,
             CQ_REVISION_ROUND: "1",
         }

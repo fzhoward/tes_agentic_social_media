@@ -87,7 +87,7 @@ PERFORMANCE_LOOKBACK_DAYS: int = 14
 RECENT_QUEUE_LOOKBACK_DAYS: int = 14
 
 # Anthropic model.
-ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 ANTHROPIC_MAX_TOKENS: int = 8192
 
 # Soft cap on creatomate_video posts per platform per week.
@@ -631,6 +631,8 @@ Distribute posts evenly across the 7-day window. Pick concrete scheduled_datetim
 
 Use only these exact strings for content_type:
 {content_type_lines}
+
+Across a full 7-day planning cycle, aim to use at least 6 of the 9 content types. If a content type requires inputs you don't have (e.g., Social Proof requires a real customer review, Job Story requires real job details, Promotional requires a real offer or availability window), skip it — don't fabricate to fill the slot. But don't skip types just because they're less familiar: Comparison / Decision Helper, Educational Tip, and Local Connection don't require owner-supplied source material and should appear regularly across the week.
 
 # Media Format Rules
 
