@@ -1829,6 +1829,391 @@ def test_prompt_includes_sentence_length_rule() -> None:
 
 
 # ----------------------------------------------------------------------
+# LLM-assisted image selection tests
+# ----------------------------------------------------------------------
+
+import json as _json  # local alias to avoid touching existing imports
+
+from tools import image_selector as _image_selector  # noqa: E402
+
+
+def _sample_candidates() -> list[dict]:
+    return [
+        {"image_id": "img_a", "photo_context": "Equipment Working",
+         "job_type": "Land Clearing",
+         "notes": "1 week rental cleaning up after timber harvest",
+         "rank": 1},
+        {"image_id": "img_b", "photo_context": "Equipment staged / parked",
+         "job_type": "", "notes": "", "rank": 2},
+        {"image_id": "img_c", "photo_context": "Finished result",
+         "job_type": "Residential foundation",
+         "notes": "Tight backyard access, had to remove fence panel",
+         "rank": 3},
+    ]
+
+
+def test_prompt_includes_image_candidates_block() -> None:
+    """When 2+ candidates are passed, the user message must contain the
+    'Available Source Images' selection block listing each candidate's
+    Photo Context."""
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_CTA_TYPE: "save",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_text_overlay",
+        drafter.CQ_ANGLE: "Tight residential lot reach.",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "eq-1",
+    }
+    candidates = _sample_candidates()
+    _, user_msg = drafter.build_drafter_messages(
+        row=row,
+        catalog_item={"item_name": "Mini Ex", "category": "Excavator",
+                      "model": "303.5", "description": "compact"},
+        config=config,
+        brand_voice="(bv)",
+        hook_skill="(hook)",
+        cta_skill="(cta)",
+        platform_style="(ps)",
+        few_shot_library="(fs)",
+        strategy_guidance="(sg)",
+        image_candidates=candidates,
+    )
+    has_block_header = "Available Source Images" in user_msg
+    all_contexts_present = all(
+        c["photo_context"] in user_msg for c in candidates
+    )
+    has_selection_instruction = "selected_image_id" in user_msg
+    _check(
+        "48. build_drafter_messages — image candidates block lists all "
+        "Photo Contexts and references selected_image_id",
+        has_block_header and all_contexts_present and has_selection_instruction,
+        f"has_block_header={has_block_header}, "
+        f"all_contexts_present={all_contexts_present}, "
+        f"has_selection_instruction={has_selection_instruction}",
+    )
+
+
+def test_prompt_single_candidate_shows_context() -> None:
+    """1 candidate: prompt must use 'Source Image Context' (not the
+    selection block) and include the candidate's metadata."""
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_CTA_TYPE: "save",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_text_overlay",
+        drafter.CQ_ANGLE: "Tight residential lot reach.",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "eq-1",
+    }
+    single = [_sample_candidates()[0]]
+    _, user_msg = drafter.build_drafter_messages(
+        row=row,
+        catalog_item={"item_name": "Mini Ex"},
+        config=config,
+        brand_voice="(bv)",
+        hook_skill="(hook)",
+        cta_skill="(cta)",
+        platform_style="(ps)",
+        few_shot_library="(fs)",
+        strategy_guidance="(sg)",
+        image_candidates=single,
+    )
+    _check(
+        "49. build_drafter_messages — single candidate shows 'Source Image "
+        "Context' block (not selection block) with metadata",
+        "Source Image Context" in user_msg
+        and "Available Source Images" not in user_msg
+        and single[0]["photo_context"] in user_msg
+        and single[0]["job_type"] in user_msg
+        and single[0]["notes"] in user_msg,
+        f"has_context_header={'Source Image Context' in user_msg}, "
+        f"no_selection_block="
+        f"{'Available Source Images' not in user_msg}, "
+        f"has_metadata=(ctx={single[0]['photo_context'] in user_msg}, "
+        f"jt={single[0]['job_type'] in user_msg}, "
+        f"notes={single[0]['notes'] in user_msg})",
+    )
+
+
+def test_prompt_no_candidates_no_image_block() -> None:
+    """image_candidates=None: no image block appears in the prompt."""
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_CTA_TYPE: "save",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "image2_enhanced",
+        drafter.CQ_ANGLE: "Tight residential lot reach.",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+    _, user_msg = drafter.build_drafter_messages(
+        row=row,
+        catalog_item=None,
+        config=config,
+        brand_voice="(bv)",
+        hook_skill="(hook)",
+        cta_skill="(cta)",
+        platform_style="(ps)",
+        few_shot_library="(fs)",
+        strategy_guidance="(sg)",
+        image_candidates=None,
+    )
+    _check(
+        "50. build_drafter_messages — no candidates: neither 'Available "
+        "Source Images' nor 'Source Image Context' appears in the prompt",
+        "Available Source Images" not in user_msg
+        and "Source Image Context" not in user_msg,
+        f"has_selection={'Available Source Images' in user_msg}, "
+        f"has_context={'Source Image Context' in user_msg}",
+    )
+
+
+def _build_mock_drafter_context() -> dict:
+    """Minimal context dict for invoking draft_single_row with mocks."""
+    catalog_row = {
+        "item_id": "eq-1",
+        "item_name": "Mini Excavator",
+        "category": "Excavator",
+        "model": "303.5",
+        "description": "compact mini excavator",
+        "primary_image_id": "primary-fallback",
+    }
+    queue_row = {
+        drafter.CQ_ROW_ID: "TEST-LLM-IMG-01",
+        drafter.CQ_STATUS: "planned",
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_CTA_TYPE: "save",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_text_overlay",
+        drafter.CQ_ANGLE: "Tight residential lot reach.",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "eq-1",
+        drafter.CQ_SOURCE_IMAGE: "",
+        drafter.CQ_SCHEDULED: "",
+        drafter.CQ_REVIEW_ID: "",
+    }
+    return {
+        "sheets_service": None,
+        "drive_service": None,
+        "queue_id": "fake-queue-id",
+        "queue_tab": "Sheet1",
+        "catalog_id": "fake-catalog-id",
+        "catalog_tab": "Sheet1",
+        "reviews_id": "",
+        "reviews_tab": "",
+        "queue_rows": [queue_row],
+        "catalog_rows": [catalog_row],
+        "reviews_rows": [],
+        "skills": {
+            "brand_voice": "(bv)",
+            "hook_creation": "(hook)",
+            "cta": "(cta)",
+            "platform_style": "(ps)",
+            "image_prompt_universal": "",
+            "image_prompt_social": "",
+            "few_shot_library": "(fs)",
+            "strategy_guidance": "(sg)",
+            "review_excerpt_selection": "",
+        },
+    }
+
+
+def _valid_llm_output(selected_image_id: str) -> dict:
+    """Build a validation-passing LLM output JSON dict.
+
+    Tuned for: platform=facebook, objective=brand_awareness, cta_type=save,
+    text_overlay=FALSE, media_format=creatomate_text_overlay — so cta_text
+    can be empty and image_overlay_hook must be empty.
+    """
+    return {
+        "caption_hook": "Tight residential lot here.",
+        "caption_body": "Zero swing fits where others cannot.",
+        "cta_text": "",
+        "image_overlay_hook": "",
+        "creative_hook_text": "Zero swing wins",
+        "review_excerpt": "",
+        "selected_image_id": selected_image_id,
+        "first_comment": "",
+        "draft_rationale": "test rationale",
+    }
+
+
+def _run_draft_with_mocks(
+    *,
+    candidates: list[dict],
+    llm_output: dict,
+    queue_row_overrides: dict | None = None,
+) -> tuple[dict, dict]:
+    """Drive draft_single_row through a mocked LLM + candidate selector.
+
+    Returns (result_dict, call_counters) where call_counters tracks how
+    many times the mocks were invoked.
+    """
+    context = _build_mock_drafter_context()
+    if queue_row_overrides:
+        context["queue_rows"][0].update(queue_row_overrides)
+
+    counters = {
+        "select_top_candidates": 0,
+        "select_source_image": 0,
+        "call_anthropic": 0,
+        "generate_media": 0,
+    }
+
+    def fake_select_top_candidates(*args, **kwargs):
+        counters["select_top_candidates"] += 1
+        return {
+            "candidates": list(candidates),
+            "total_available": len(candidates),
+            "fallback_image_id": "primary-fallback",
+            "error": "",
+        }
+
+    def fake_select_source_image(*args, **kwargs):
+        counters["select_source_image"] += 1
+        return {
+            "image_id": "primary-fallback",
+            "selection_reason": "deterministic single image (mock)",
+            "total_available": 1,
+            "fallback": False,
+        }
+
+    def fake_call_anthropic(*args, **kwargs):
+        counters["call_anthropic"] += 1
+        return _json.dumps(llm_output)
+
+    def fake_generate_media(*args, **kwargs):
+        counters["generate_media"] += 1
+        return {
+            "success": True,
+            "output_path": "/tmp/fake.png",
+            "media_format_used": "creatomate_text_overlay",
+            "fallback_chain": [],
+            "error": "",
+        }
+
+    orig_top = _image_selector.select_top_candidates
+    orig_src = _image_selector.select_source_image
+    orig_call = drafter.call_anthropic
+    orig_gen = drafter.generate_media
+    _image_selector.select_top_candidates = fake_select_top_candidates
+    _image_selector.select_source_image = fake_select_source_image
+    drafter.call_anthropic = fake_call_anthropic
+    drafter.generate_media = fake_generate_media
+    try:
+        result = drafter.draft_single_row(
+            row_id="TEST-LLM-IMG-01",
+            context=context,
+            config=load_config(),
+            dry_run=True,
+        )
+    finally:
+        _image_selector.select_top_candidates = orig_top
+        _image_selector.select_source_image = orig_src
+        drafter.call_anthropic = orig_call
+        drafter.generate_media = orig_gen
+
+    return result, counters
+
+
+def test_llm_image_pick_valid() -> None:
+    """LLM returns selected_image_id matching a candidate (img_b, rank 2).
+    Drafter must swap image_id and update selection_reason."""
+    candidates = _sample_candidates()
+    result, counters = _run_draft_with_mocks(
+        candidates=candidates,
+        llm_output=_valid_llm_output(selected_image_id="img_b"),
+    )
+    src = result.get("source_image", {}) if isinstance(result, dict) else {}
+    _check(
+        "51. draft_single_row — LLM-selected image (img_b) is applied; "
+        "selection_reason indicates LLM selection",
+        result.get("status") == "success"
+        and src.get("image_id") == "img_b"
+        and "LLM-selected" in src.get("selection_reason", "")
+        and counters["select_top_candidates"] == 1
+        and counters["call_anthropic"] >= 1,
+        f"status={result.get('status')}, source_image={src!r}, "
+        f"counters={counters}, error={result.get('error')!r}, "
+        f"validation_issues={result.get('validation_issues')!r}",
+    )
+
+
+def test_llm_image_pick_invalid_falls_back() -> None:
+    """LLM returns an image_id not in the candidate list. Drafter keeps the
+    top-ranked default (img_a, rank 1)."""
+    candidates = _sample_candidates()
+    result, counters = _run_draft_with_mocks(
+        candidates=candidates,
+        llm_output=_valid_llm_output(selected_image_id="bogus-id-zzz"),
+    )
+    src = result.get("source_image", {}) if isinstance(result, dict) else {}
+    _check(
+        "52. draft_single_row — invalid LLM selected_image_id falls back to "
+        "top-ranked candidate (img_a) with original selection_reason",
+        result.get("status") == "success"
+        and src.get("image_id") == "img_a"
+        and "LLM-selected" not in src.get("selection_reason", ""),
+        f"status={result.get('status')}, source_image={src!r}, "
+        f"counters={counters}, error={result.get('error')!r}",
+    )
+
+
+def test_llm_image_pick_empty_uses_default() -> None:
+    """LLM returns selected_image_id="". Drafter keeps top-ranked default."""
+    candidates = _sample_candidates()
+    result, counters = _run_draft_with_mocks(
+        candidates=candidates,
+        llm_output=_valid_llm_output(selected_image_id=""),
+    )
+    src = result.get("source_image", {}) if isinstance(result, dict) else {}
+    _check(
+        "53. draft_single_row — empty LLM selected_image_id keeps "
+        "top-ranked candidate (img_a)",
+        result.get("status") == "success"
+        and src.get("image_id") == "img_a"
+        and "LLM-selected" not in src.get("selection_reason", ""),
+        f"status={result.get('status')}, source_image={src!r}, "
+        f"counters={counters}, error={result.get('error')!r}",
+    )
+
+
+def test_strategist_preassigned_image_skips_candidates() -> None:
+    """When source_image_id is pre-assigned on the queue row,
+    select_top_candidates must NOT be called and the pre-assigned image
+    is used directly."""
+    candidates = _sample_candidates()  # would be returned IF called
+    result, counters = _run_draft_with_mocks(
+        candidates=candidates,
+        llm_output=_valid_llm_output(selected_image_id="img_c"),
+        queue_row_overrides={drafter.CQ_SOURCE_IMAGE: "preset-strategist-id"},
+    )
+    src = result.get("source_image", {}) if isinstance(result, dict) else {}
+    _check(
+        "54. draft_single_row — pre-assigned source_image_id skips "
+        "select_top_candidates and ignores LLM pick",
+        result.get("status") == "success"
+        and src.get("image_id") == "preset-strategist-id"
+        and counters["select_top_candidates"] == 0
+        and "pre-assigned" in src.get("selection_reason", "").lower(),
+        f"status={result.get('status')}, source_image={src!r}, "
+        f"counters={counters}, error={result.get('error')!r}",
+    )
+
+
+# ----------------------------------------------------------------------
 # Integration test
 # ----------------------------------------------------------------------
 
@@ -1990,6 +2375,13 @@ def run_tests(run_live: bool) -> int:
     test_rewrite_long_sentences_max_attempts_exhausted()
     test_rewrite_preserves_other_fields()
     test_prompt_includes_sentence_length_rule()
+    test_prompt_includes_image_candidates_block()
+    test_prompt_single_candidate_shows_context()
+    test_prompt_no_candidates_no_image_block()
+    test_llm_image_pick_valid()
+    test_llm_image_pick_invalid_falls_back()
+    test_llm_image_pick_empty_uses_default()
+    test_strategist_preassigned_image_skips_candidates()
 
     if run_live:
         print()
