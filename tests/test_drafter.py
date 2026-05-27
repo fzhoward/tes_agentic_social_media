@@ -126,6 +126,102 @@ def test_overlay_hook_validation_empty_when_not_required() -> None:
     )
 
 
+def test_overlay_hook_validation_video_format_allows_any_hook() -> None:
+    """When text_overlay=FALSE and media_format is a video format, a populated
+    hook is allowed (Creatomate video templates need Hook-Text regardless of
+    the image-overlay flag). Non-video formats still reject populated hooks
+    when text_overlay=FALSE."""
+    # Video format + populated hook (any length): allowed
+    ok_short, _ = drafter.validate_overlay_hook(
+        "Tight site reach", "FALSE", "creatomate_video",
+    )
+    ok_long, _ = drafter.validate_overlay_hook(
+        "Plenty of words that would normally exceed seven words limit",
+        "FALSE",
+        "creatomate_video",
+    )
+    ok_empty, _ = drafter.validate_overlay_hook(
+        "", "FALSE", "creatomate_video",
+    )
+    ok_review_video, _ = drafter.validate_overlay_hook(
+        "Real feedback from a real rental",
+        "FALSE",
+        "creatomate_review_video",
+    )
+    # Non-video format with populated hook + FALSE still fails:
+    ok_bad, reason_bad = drafter.validate_overlay_hook(
+        "Tight site reach", "FALSE", "image2_enhanced",
+    )
+    _check(
+        "6b. overlay_hook validation — video formats allow any hook when FALSE; "
+        "non-video formats still reject populated hooks",
+        ok_short and ok_long and ok_empty and ok_review_video
+        and (not ok_bad) and "FALSE" in reason_bad,
+        f"video_short={ok_short}, video_long={ok_long}, "
+        f"video_empty={ok_empty}, review_video={ok_review_video}, "
+        f"non_video_populated={ok_bad} ({reason_bad!r})",
+    )
+
+
+def test_derive_video_hook_from_caption() -> None:
+    """Prefers caption_hook, takes the first clause, caps at max_words."""
+    short = drafter._derive_video_hook(
+        caption_hook="Tight residential lot? Zero tail swing changes the game.",
+        angle="(angle text)",
+    )
+    long = drafter._derive_video_hook(
+        caption_hook="One single very long opening clause without sentence punctuation here",
+        angle="(angle text)",
+    )
+    _check(
+        "6c. _derive_video_hook — caption_hook first clause, truncates to 7 words",
+        short == "Tight residential lot"
+        and long == "One single very long opening clause without",
+        f"short={short!r}, long={long!r}",
+    )
+
+
+def test_derive_video_hook_falls_back_to_angle() -> None:
+    """Falls back to angle when caption_hook is empty."""
+    derived = drafter._derive_video_hook(
+        caption_hook="",
+        angle="Show the machine on a tight residential lot. With clay soil.",
+    )
+    _check(
+        "6d. _derive_video_hook — falls back to angle when caption_hook empty",
+        derived == "Show the machine on a tight residential",
+        f"got={derived!r}",
+    )
+
+
+def test_derive_video_hook_strips_banned_chars() -> None:
+    """Strips '!' and em-dash from the derived hook per brand voice rules."""
+    derived = drafter._derive_video_hook(
+        caption_hook="Wow! What a machine!",
+        angle="",
+    )
+    derived_em = drafter._derive_video_hook(
+        caption_hook="Real reach — no excuses",
+        angle="",
+    )
+    _check(
+        "6e. _derive_video_hook — strips banned chars (! and em-dash)",
+        derived == "Wow What a machine"
+        and derived_em == "Real reach no excuses",
+        f"banged={derived!r}, em_dashed={derived_em!r}",
+    )
+
+
+def test_derive_video_hook_empty_input() -> None:
+    """Both inputs empty returns empty string (no fallback to magic text)."""
+    derived = drafter._derive_video_hook(caption_hook="", angle="")
+    _check(
+        "6f. _derive_video_hook — empty caption and angle returns empty string",
+        derived == "",
+        f"got={derived!r}",
+    )
+
+
 def test_banned_language_check() -> None:
     clean = (
         "Compact track loader handles tight lots, soft ground, and mixed material. "
@@ -340,6 +436,11 @@ def run_tests(run_live: bool) -> int:
     test_overlay_hook_validation_too_long()
     test_overlay_hook_validation_empty_when_required()
     test_overlay_hook_validation_empty_when_not_required()
+    test_overlay_hook_validation_video_format_allows_any_hook()
+    test_derive_video_hook_from_caption()
+    test_derive_video_hook_falls_back_to_angle()
+    test_derive_video_hook_strips_banned_chars()
+    test_derive_video_hook_empty_input()
     test_banned_language_check()
     test_platform_char_limit()
     test_build_drafter_messages_anti_fabrication()

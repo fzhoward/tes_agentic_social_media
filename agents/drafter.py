@@ -132,6 +132,10 @@ BANNED_PHRASES: tuple[str, ...] = (
 # Banned punctuation tokens — exclamation points and em dashes per brand voice.
 BANNED_CHARS: tuple[str, ...] = ("!", "—")
 
+# Media formats whose Creatomate template has a built-in text track that
+# needs Hook-Text populated regardless of the image-overlay flag.
+VIDEO_MEDIA_FORMATS: set[str] = {"creatomate_video", "creatomate_review_video"}
+
 
 # --- Content Queue column names (per PLACEHOLDER_REGISTRY.md) ---
 
@@ -282,14 +286,22 @@ def clean_overlay_text(text: str) -> str:
     return text.rstrip().rstrip(".,;:").rstrip()
 
 
-def validate_overlay_hook(hook: str, text_overlay_flag: str) -> tuple[bool, str]:
+def validate_overlay_hook(
+    hook: str,
+    text_overlay_flag: str,
+    media_format: str = "",
+) -> tuple[bool, str]:
     """Return (ok, reason) for the image_overlay_hook field.
 
     Required: 3-7 words when text_overlay_flag == 'TRUE'.
-    Required: empty when text_overlay_flag == 'FALSE'.
+    Required: empty when text_overlay_flag == 'FALSE' AND media_format is
+    not a video format. Video templates have a built-in Hook-Text track, so
+    a populated hook is allowed even when the image overlay is off — the
+    Drafter will pass it through to Creatomate.
     """
     flag = str(text_overlay_flag).strip().upper()
     h = (hook or "").strip()
+    fmt = str(media_format).strip().lower()
     if flag == "TRUE":
         if not h:
             return False, "image_overlay_hook is empty but text_overlay is TRUE"
@@ -300,7 +312,7 @@ def validate_overlay_hook(hook: str, text_overlay_flag: str) -> tuple[bool, str]
             return False, f"image_overlay_hook has {n} words (must be 3-7)"
         return True, ""
     if flag == "FALSE":
-        if h:
+        if h and fmt not in VIDEO_MEDIA_FORMATS:
             return False, "image_overlay_hook is set but text_overlay is FALSE"
         return True, ""
     return False, f"text_overlay flag must be TRUE or FALSE, got {flag!r}"
@@ -342,6 +354,7 @@ def validate_llm_output(
     platform: str,
     objective: str,
     cta_type: str,
+    media_format: str = "",
 ) -> tuple[list[str], str]:
     """Return (issues, assembled_caption).
 
@@ -369,7 +382,7 @@ def validate_llm_output(
             f"cta_type={cta_type!r} require one"
         )
 
-    ok, reason = validate_overlay_hook(overlay, text_overlay_flag)
+    ok, reason = validate_overlay_hook(overlay, text_overlay_flag, media_format)
     if not ok:
         issues.append(reason)
 
@@ -1003,6 +1016,36 @@ def _source_image_url(image_id: str) -> str:
     return f"https://drive.google.com/uc?id={image_id}&export=download"
 
 
+def _derive_video_hook(
+    caption_hook: str,
+    angle: str,
+    max_words: int = 7,
+) -> str:
+    """Derive a short Hook-Text string for a Creatomate video template.
+
+    Used when media_format=creatomate_video and the LLM left
+    image_overlay_hook empty because text_overlay=FALSE. Video templates
+    still need Hook-Text populated to drive their built-in text track.
+
+    Strategy: prefer the LLM-written caption_hook (the scroll-stopping
+    opening line); fall back to the angle when caption_hook is empty.
+    Take the first clause (split on '.', '?', ';', or newline), trim
+    fragment punctuation and banned chars, and cap at max_words.
+    """
+    source = (caption_hook or "").strip() or (angle or "").strip()
+    if not source:
+        return ""
+    first = re.split(r"[.?\n;]", source, maxsplit=1)[0].strip()
+    first = first.rstrip(".,;:")
+    for ch in BANNED_CHARS:
+        first = first.replace(ch, "")
+    first = first.strip()
+    words = first.split()
+    if len(words) > max_words:
+        words = words[:max_words]
+    return " ".join(words)
+
+
 # --- Media generation ---
 
 def _ensure_tmp() -> None:
@@ -1013,6 +1056,7 @@ def generate_media(
     row: dict,
     image_id: str,
     overlay_hook: str,
+    caption_hook: str,
     image_prompt_universal: str,
     image_prompt_social: str,
     config: Config,
@@ -1085,9 +1129,19 @@ def generate_media(
             if not tid:
                 fallback_chain.append((fmt, "no video templates configured"))
                 continue
+            # Video templates have a built-in text track that needs
+            # Hook-Text populated regardless of the image-overlay flag.
+            # Use overlay_hook when present (text_overlay=TRUE), otherwise
+            # derive a short hook from caption_hook/angle.
+            video_hook = (overlay_hook or "").strip()
+            if not video_hook:
+                video_hook = _derive_video_hook(
+                    caption_hook=caption_hook,
+                    angle=str(row.get(CQ_ANGLE, "")),
+                )
             mods = creatomate_helpers.build_modifications(
                 image_fields={"Equipment-Photo": source_image_url},
-                text_fields={"Hook-Text": overlay_hook or ""},
+                text_fields={"Hook-Text": video_hook},
             )
             output_path = os.path.join(TMP_DIR, f"{row_id}_rendered.mp4")
             res = creatomate_helpers.render_template(tid, mods, output_path)
@@ -1394,6 +1448,7 @@ def draft_single_row(
         platform=str(row.get(CQ_PLATFORM, "")),
         objective=str(row.get(CQ_OBJECTIVE, "")),
         cta_type=str(row.get(CQ_CTA_TYPE, "")),
+        media_format=str(row.get(CQ_MEDIA_FORMAT, "")),
     )
     if issues:
         return {
@@ -1417,6 +1472,7 @@ def draft_single_row(
         row=row,
         image_id=image_id,
         overlay_hook=overlay_hook,
+        caption_hook=caption_hook,
         image_prompt_universal=context["skills"]["image_prompt_universal"],
         image_prompt_social=context["skills"]["image_prompt_social"],
         config=config,
