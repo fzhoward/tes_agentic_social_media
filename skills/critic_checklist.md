@@ -66,6 +66,7 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 | B8 | **Word count in range.** Caption body (excluding hook) must fall within the target range for the post type and platform. | Brand voice: Word Count Targets |
 | B9 | **No competing hook.** The caption body must not include its own opening hook. The body starts with the first line of content, assuming a hook will be prepended by the system. | Brand voice: Hook Handling |
 | B10 | **Reading level.** Content should target 6th-7th grade Flesch-Kincaid reading level. | Brand voice: Caption Formatting |
+| B11 | **Creative hook text ≤ 7 words.** The `creative_hook_text` field must contain no more than 7 words. Distinct from `caption_hook` — neither string may be a case-insensitive substring of the other. | Drafter SOP: Creative Hook Text Rules |
 
 ### C. Content & Voice Rules (Soft Fail)
 
