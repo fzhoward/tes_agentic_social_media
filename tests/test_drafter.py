@@ -31,7 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
 CONFIG_FILE = PROJECT_ROOT / "business_config_tes_rentals.yaml"
 os.environ.setdefault("BUSINESS_CONFIG_PATH", str(CONFIG_FILE))
 
-from agents import drafter  # noqa: E402
+from agents import critic, drafter  # noqa: E402
 from tools import creatomate_helpers, sheets_helpers  # noqa: E402
 from tools.config_loader import Config, load_config  # noqa: E402
 
@@ -1398,6 +1398,437 @@ def test_build_drafter_messages_includes_review_block() -> None:
 
 
 # ----------------------------------------------------------------------
+# Sentence-length enforcement (B6) — Session 17
+# ----------------------------------------------------------------------
+
+def _make_long_sentence(n_words: int) -> str:
+    """Build a sentence with exactly n_words words (no terminal period)."""
+    return " ".join(["word"] * n_words)
+
+
+def test_split_sentences_matches_critic() -> None:
+    """Drafter and Critic must agree on sentence splitting — both run B6 with
+    the same regex, stripping, and filtering."""
+    samples = [
+        "First sentence. Second sentence.",
+        "Is this right? Yes it is.",
+        "First part of the sentence\n\nthat continues here.",
+        "",
+        "Just a fragment",
+    ]
+    mismatches: list[tuple[str, list[str], list[str]]] = []
+    for s in samples:
+        d = drafter._split_sentences(s)
+        c = critic._split_sentences(s)
+        if d != c:
+            mismatches.append((s, d, c))
+    _check(
+        "34. _split_sentences matches critic for canonical sample inputs",
+        not mismatches,
+        f"mismatches={mismatches!r}",
+    )
+
+
+def test_sentence_max_words_matches_critic() -> None:
+    """The 18-word cap must be identical on both sides."""
+    _check(
+        "35. SENTENCE_MAX_WORDS matches critic and equals 18",
+        drafter.SENTENCE_MAX_WORDS == critic.SENTENCE_MAX_WORDS == 18,
+        f"drafter={drafter.SENTENCE_MAX_WORDS}, "
+        f"critic={critic.SENTENCE_MAX_WORDS}",
+    )
+
+
+def test_sentence_split_re_matches_critic() -> None:
+    """The split regex pattern must be identical on both sides."""
+    _check(
+        "36. SENTENCE_SPLIT_RE pattern matches critic",
+        drafter.SENTENCE_SPLIT_RE.pattern == critic.SENTENCE_SPLIT_RE.pattern,
+        f"drafter={drafter.SENTENCE_SPLIT_RE.pattern!r}, "
+        f"critic={critic.SENTENCE_SPLIT_RE.pattern!r}",
+    )
+
+
+def test_find_violations_clean_caption() -> None:
+    """All sentences ≤18 words → empty violations."""
+    parsed = {
+        "caption_hook": "Tight residential lot? Zero tail swing changes the game.",
+        "caption_body": (
+            "Reaches the back corner without bumping the fence.\n\n"
+            "Leaves grass and pavers untouched."
+        ),
+        "cta_text": "Call to book.",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+    _check(
+        "37. find_sentence_length_violations — clean caption returns []",
+        violations == [],
+        f"violations={violations!r}",
+    )
+
+
+def test_find_violations_long_caption_body() -> None:
+    """A 22-word body sentence produces one violation with correct metadata."""
+    long_sentence = _make_long_sentence(22)
+    parsed = {
+        "caption_hook": "Short hook.",
+        "caption_body": f"{long_sentence}.",
+        "cta_text": "",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+    ok = (
+        len(violations) == 1
+        and violations[0]["field"] == "caption_body"
+        and violations[0]["word_count"] == 22
+        and violations[0]["text"] == long_sentence
+    )
+    _check(
+        "38. find_sentence_length_violations — 22-word caption_body sentence "
+        "produces one correctly-described violation",
+        ok,
+        f"violations={violations!r}",
+    )
+
+
+def test_find_violations_long_caption_hook() -> None:
+    """A 20-word hook sentence produces one violation on caption_hook."""
+    long_sentence = _make_long_sentence(20)
+    parsed = {
+        "caption_hook": f"{long_sentence}.",
+        "caption_body": "Short body.",
+        "cta_text": "",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+    ok = (
+        len(violations) == 1
+        and violations[0]["field"] == "caption_hook"
+        and violations[0]["word_count"] == 20
+    )
+    _check(
+        "39. find_sentence_length_violations — 20-word caption_hook produces "
+        "one violation on caption_hook",
+        ok,
+        f"violations={violations!r}",
+    )
+
+
+def test_find_violations_cta_text_excluded() -> None:
+    """A 25-word cta_text sentence is intentionally not flagged — CTAs follow
+    standardized brand voice patterns that may legitimately exceed 18 words."""
+    long_sentence = _make_long_sentence(25)
+    parsed = {
+        "caption_hook": "Short hook.",
+        "caption_body": "Short body.",
+        "cta_text": f"{long_sentence}.",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+    _check(
+        "40. find_sentence_length_violations — cta_text excluded even when "
+        "long",
+        violations == [],
+        f"violations={violations!r}",
+    )
+
+
+def test_find_violations_multiple() -> None:
+    """One hook violation + two body violations = three violations total."""
+    hook_long = _make_long_sentence(19)
+    body_long_1 = _make_long_sentence(21)
+    body_long_2 = _make_long_sentence(24)
+    parsed = {
+        "caption_hook": f"{hook_long}.",
+        "caption_body": (
+            f"{body_long_1}. Short clean sentence in the middle. "
+            f"{body_long_2}."
+        ),
+        "cta_text": "",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+    fields = [v["field"] for v in violations]
+    counts = sorted(v["word_count"] for v in violations)
+    _check(
+        "41. find_sentence_length_violations — counts violations across "
+        "caption_hook + caption_body",
+        len(violations) == 3
+        and fields.count("caption_hook") == 1
+        and fields.count("caption_body") == 2
+        and counts == [19, 21, 24],
+        f"violations={violations!r}",
+    )
+
+
+def test_find_violations_boundary_18_words() -> None:
+    """Exactly 18 words → no violation. 19 words → violation."""
+    parsed_18 = {
+        "caption_hook": "Short hook.",
+        "caption_body": f"{_make_long_sentence(18)}.",
+        "cta_text": "",
+    }
+    parsed_19 = {
+        "caption_hook": "Short hook.",
+        "caption_body": f"{_make_long_sentence(19)}.",
+        "cta_text": "",
+    }
+    v18 = drafter.find_sentence_length_violations(parsed_18)
+    v19 = drafter.find_sentence_length_violations(parsed_19)
+    _check(
+        "42. find_sentence_length_violations — boundary: 18 passes, 19 fails",
+        v18 == [] and len(v19) == 1 and v19[0]["word_count"] == 19,
+        f"v18={v18!r}, v19={v19!r}",
+    )
+
+
+def test_rewrite_long_sentences_success() -> None:
+    """A successful mocked rewrite replaces the violating sentence and leaves
+    no remaining violations."""
+    import json as _json
+
+    long_sentence = _make_long_sentence(22)
+    parsed = {
+        "caption_hook": "Short hook.",
+        "caption_body": f"{long_sentence}.",
+        "cta_text": "",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+
+    def fake_call(system_message, user_message, max_tokens=1024):
+        return _json.dumps({
+            "rewrites": [
+                {
+                    "field": "caption_body",
+                    "original": long_sentence,
+                    "rewritten": "Short rewrite. Second clean sentence.",
+                },
+            ],
+        })
+
+    orig = drafter.call_anthropic
+    drafter.call_anthropic = fake_call
+    try:
+        updated, warnings = drafter.rewrite_long_sentences(violations, parsed)
+    finally:
+        drafter.call_anthropic = orig
+
+    remaining = drafter.find_sentence_length_violations(updated)
+    _check(
+        "43. rewrite_long_sentences — successful rewrite eliminates the "
+        "violation, returns no warnings",
+        remaining == [] and warnings == []
+        and "Short rewrite" in updated["caption_body"],
+        f"remaining={remaining!r}, warnings={warnings!r}, "
+        f"updated_body={updated['caption_body']!r}",
+    )
+
+
+def test_rewrite_long_sentences_still_long_retry() -> None:
+    """First attempt returns a still-too-long rewrite; second attempt succeeds.
+    Confirms the retry path works."""
+    import json as _json
+
+    original_long = _make_long_sentence(22)
+    still_long = _make_long_sentence(20)
+    parsed = {
+        "caption_hook": "Short hook.",
+        "caption_body": f"{original_long}.",
+        "cta_text": "",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+
+    call_count = {"n": 0}
+
+    def fake_call(system_message, user_message, max_tokens=1024):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _json.dumps({
+                "rewrites": [
+                    {
+                        "field": "caption_body",
+                        "original": original_long,
+                        "rewritten": still_long,
+                    },
+                ],
+            })
+        return _json.dumps({
+            "rewrites": [
+                {
+                    "field": "caption_body",
+                    "original": still_long,
+                    "rewritten": "Final short rewrite.",
+                },
+            ],
+        })
+
+    orig = drafter.call_anthropic
+    drafter.call_anthropic = fake_call
+    try:
+        updated, warnings = drafter.rewrite_long_sentences(violations, parsed)
+    finally:
+        drafter.call_anthropic = orig
+
+    remaining = drafter.find_sentence_length_violations(updated)
+    _check(
+        "44. rewrite_long_sentences — retries when first attempt is still "
+        "long, succeeds on second attempt",
+        call_count["n"] == 2
+        and remaining == []
+        and "Final short rewrite" in updated["caption_body"],
+        f"calls={call_count['n']}, remaining={remaining!r}, "
+        f"updated_body={updated['caption_body']!r}, warnings={warnings!r}",
+    )
+
+
+def test_rewrite_long_sentences_max_attempts_exhausted() -> None:
+    """If both attempts return sentences that still exceed the limit, the
+    function returns the best result with an exhausted-attempts warning and
+    does not raise. The Critic remains the safety net."""
+    import json as _json
+
+    original_long = _make_long_sentence(22)
+    still_long_1 = _make_long_sentence(21)
+    still_long_2 = _make_long_sentence(20)
+    parsed = {
+        "caption_hook": "Short hook.",
+        "caption_body": f"{original_long}.",
+        "cta_text": "",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+
+    call_count = {"n": 0}
+
+    def fake_call(system_message, user_message, max_tokens=1024):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _json.dumps({
+                "rewrites": [
+                    {
+                        "field": "caption_body",
+                        "original": original_long,
+                        "rewritten": still_long_1,
+                    },
+                ],
+            })
+        return _json.dumps({
+            "rewrites": [
+                {
+                    "field": "caption_body",
+                    "original": still_long_1,
+                    "rewritten": still_long_2,
+                },
+            ],
+        })
+
+    orig = drafter.call_anthropic
+    drafter.call_anthropic = fake_call
+    try:
+        updated, warnings = drafter.rewrite_long_sentences(violations, parsed)
+    finally:
+        drafter.call_anthropic = orig
+
+    remaining = drafter.find_sentence_length_violations(updated)
+    exhausted_warning_present = any(
+        "gave up" in w or "exhausted" in w.lower() for w in warnings
+    )
+    _check(
+        "45. rewrite_long_sentences — exhausts max attempts without raising, "
+        "returns best result with warning",
+        call_count["n"] == 2
+        and len(remaining) == 1
+        and exhausted_warning_present,
+        f"calls={call_count['n']}, remaining={remaining!r}, "
+        f"warnings={warnings!r}",
+    )
+
+
+def test_rewrite_preserves_other_fields() -> None:
+    """Rewriting caption_body must not change caption_hook, cta_text,
+    image_overlay_hook, creative_hook_text, first_comment, or draft_rationale."""
+    import json as _json
+
+    long_sentence = _make_long_sentence(22)
+    parsed = {
+        "caption_hook": "Original short hook.",
+        "caption_body": f"{long_sentence}.",
+        "cta_text": "Original CTA.",
+        "image_overlay_hook": "Original overlay hook",
+        "creative_hook_text": "Original creative hook",
+        "first_comment": "Original first comment",
+        "draft_rationale": "Original rationale",
+    }
+    violations = drafter.find_sentence_length_violations(parsed)
+
+    def fake_call(system_message, user_message, max_tokens=1024):
+        return _json.dumps({
+            "rewrites": [
+                {
+                    "field": "caption_body",
+                    "original": long_sentence,
+                    "rewritten": "Short rewrite. Done.",
+                },
+            ],
+        })
+
+    orig = drafter.call_anthropic
+    drafter.call_anthropic = fake_call
+    try:
+        updated, _warnings = drafter.rewrite_long_sentences(violations, parsed)
+    finally:
+        drafter.call_anthropic = orig
+
+    preserved = all(
+        updated[k] == parsed[k]
+        for k in (
+            "caption_hook",
+            "cta_text",
+            "image_overlay_hook",
+            "creative_hook_text",
+            "first_comment",
+            "draft_rationale",
+        )
+    )
+    _check(
+        "46. rewrite_long_sentences — only caption_body changes; all other "
+        "fields are preserved",
+        preserved and updated["caption_body"] != parsed["caption_body"],
+        f"updated={updated!r}",
+    )
+
+
+def test_prompt_includes_sentence_length_rule() -> None:
+    """Smoke test: both the system message and the Critical Instructions
+    block in the user message must mention the 18-word sentence cap."""
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_CTA_TYPE: "save",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "image2_enhanced",
+        drafter.CQ_ANGLE: "Show the machine on a tight residential lot.",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+    system_msg, user_msg = drafter.build_drafter_messages(
+        row=row,
+        catalog_item=None,
+        config=config,
+        brand_voice="(brand voice text)",
+        hook_skill="(hook skill text)",
+        cta_skill="(cta skill text)",
+        platform_style="(platform style text)",
+        few_shot_library="(few shot library text)",
+        strategy_guidance="(strategy guidance text)",
+    )
+    _check(
+        "47. build_drafter_messages — sentence-length rule (18 words) "
+        "appears in both system message and user message",
+        "18 words" in system_msg and "18 words" in user_msg,
+        f"sys_has='{('18 words' in system_msg)}', "
+        f"user_has='{('18 words' in user_msg)}'",
+    )
+
+
+# ----------------------------------------------------------------------
 # Integration test
 # ----------------------------------------------------------------------
 
@@ -1545,6 +1976,20 @@ def run_tests(run_live: bool) -> int:
     test_render_review_video_uses_passed_excerpt()
     test_render_review_image_falls_back_to_excerpt_long_when_excerpt_empty()
     test_build_drafter_messages_injects_excerpt_skill_and_budget()
+    test_split_sentences_matches_critic()
+    test_sentence_max_words_matches_critic()
+    test_sentence_split_re_matches_critic()
+    test_find_violations_clean_caption()
+    test_find_violations_long_caption_body()
+    test_find_violations_long_caption_hook()
+    test_find_violations_cta_text_excluded()
+    test_find_violations_multiple()
+    test_find_violations_boundary_18_words()
+    test_rewrite_long_sentences_success()
+    test_rewrite_long_sentences_still_long_retry()
+    test_rewrite_long_sentences_max_attempts_exhausted()
+    test_rewrite_preserves_other_fields()
+    test_prompt_includes_sentence_length_rule()
 
     if run_live:
         print()
