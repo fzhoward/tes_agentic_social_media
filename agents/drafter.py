@@ -201,6 +201,11 @@ CREATOMATE_EQUIPMENT_FORMATS: set[str] = {
 # falls apart past this length.
 CREATIVE_HOOK_MAX_WORDS: int = 7
 
+# Sentence-length enforcement — must match critic.py values exactly so both
+# agents measure the same way.
+SENTENCE_MAX_WORDS: int = 18
+SENTENCE_SPLIT_RE = re.compile(r"[.!?]+(?:\s+|$)")
+
 
 # --- Catalog column names ---
 
@@ -292,6 +297,158 @@ def _find_row_index(
 
 def count_words(text: str) -> int:
     return len([w for w in re.split(r"\s+", text.strip()) if w])
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences for B6 enforcement.
+
+    Must match critic.py's _split_sentences exactly — same regex, same
+    stripping, same filtering. Both agents must agree on what constitutes
+    a sentence and how many words it contains.
+    """
+    if not text:
+        return []
+    raw = SENTENCE_SPLIT_RE.split(text)
+    return [s.strip() for s in raw if s and s.strip()]
+
+
+def find_sentence_length_violations(parsed: dict) -> list[dict]:
+    """Find sentences exceeding SENTENCE_MAX_WORDS in caption_hook and caption_body.
+
+    Does NOT check cta_text — CTAs follow standardized brand voice patterns
+    that may legitimately exceed 18 words.
+
+    Returns a list of dicts with keys: field, sentence_index, word_count, text.
+    Empty list means no violations.
+    """
+    violations: list[dict] = []
+    for field in ("caption_hook", "caption_body"):
+        text = str(parsed.get(field, "") or "").strip()
+        if not text:
+            continue
+        for idx, sentence in enumerate(_split_sentences(text), start=1):
+            n = count_words(sentence)
+            if n > SENTENCE_MAX_WORDS:
+                violations.append({
+                    "field": field,
+                    "sentence_index": idx,
+                    "word_count": n,
+                    "text": sentence,
+                })
+    return violations
+
+
+def rewrite_long_sentences(
+    violations: list[dict],
+    parsed: dict,
+    max_attempts: int = 2,
+) -> tuple[dict, list[str]]:
+    """Rewrite sentences that exceed SENTENCE_MAX_WORDS.
+
+    Sends ONLY the violating sentences to the LLM with a focused rewrite
+    instruction. Replaces the offending sentences in `parsed` in-place and
+    returns the updated dict plus a list of warning strings.
+
+    Up to `max_attempts` rewrite rounds. If violations remain after all
+    attempts, returns the best result and lets the Critic catch remaining
+    issues.
+    """
+    warnings: list[str] = []
+    current = dict(parsed)
+    remaining = list(violations)
+
+    rewrite_system = (
+        "You are rewriting sentences to be "
+        f"{SENTENCE_MAX_WORDS} words or fewer while preserving meaning "
+        "and the brand voice. The brand voice is short, punchy, "
+        "declarative — match that tone. Split long sentences into two "
+        "shorter ones rather than trimming meaning. No emoji, no "
+        "exclamation points, no em dashes, no markdown. "
+        "Return valid JSON only."
+    )
+
+    for attempt in range(1, max_attempts + 1):
+        if not remaining:
+            break
+
+        sentences_payload = [
+            {
+                "field": v["field"],
+                "original": v["text"],
+                "word_count": v["word_count"],
+            }
+            for v in remaining
+        ]
+        rewrite_user = (
+            f"Rewrite each of the following sentences to be "
+            f"{SENTENCE_MAX_WORDS} words or fewer. Preserve the meaning "
+            f"and the punchy, declarative brand voice. If a sentence "
+            f"needs more than {SENTENCE_MAX_WORDS} words to make its "
+            f"point, split it into two shorter sentences and return "
+            f"the result as a single string (the two sentences joined "
+            f"by a space).\n\n"
+            f"Target 8-12 words per sentence.\n\n"
+            f"Sentences to rewrite:\n"
+            f"{json.dumps(sentences_payload, indent=2)}\n\n"
+            f"Return JSON with this exact shape:\n"
+            f'{{"rewrites": [{{"field": "...", "original": "...", '
+            f'"rewritten": "..."}}]}}'
+        )
+
+        try:
+            raw = call_anthropic(
+                rewrite_system, rewrite_user, max_tokens=1024,
+            )
+            rewrite_parsed = parse_llm_json(raw)
+        except Exception as exc:
+            warnings.append(
+                f"sentence-length rewrite attempt {attempt} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            break
+
+        rewrites = rewrite_parsed.get("rewrites", [])
+        if not isinstance(rewrites, list):
+            warnings.append(
+                f"sentence-length rewrite attempt {attempt} returned "
+                f"unexpected shape (no rewrites list)"
+            )
+            break
+
+        for rw in rewrites:
+            if not isinstance(rw, dict):
+                continue
+            field = str(rw.get("field", "")).strip()
+            original = str(rw.get("original", "")).strip()
+            rewritten = str(rw.get("rewritten", "")).strip()
+            if field not in ("caption_hook", "caption_body"):
+                continue
+            if not original or not rewritten:
+                continue
+            field_text = str(current.get(field, "") or "")
+            if original in field_text:
+                current[field] = field_text.replace(original, rewritten, 1)
+            else:
+                warnings.append(
+                    f"sentence-length rewrite: could not locate original "
+                    f"sentence in {field} (rewrite skipped): {original!r}"
+                )
+
+        remaining = find_sentence_length_violations(current)
+        if remaining and attempt < max_attempts:
+            warnings.append(
+                f"sentence-length rewrite attempt {attempt} left "
+                f"{len(remaining)} violation(s); retrying"
+            )
+
+    if remaining:
+        warnings.append(
+            f"sentence-length enforcement gave up after {max_attempts} "
+            f"attempt(s) with {len(remaining)} violation(s) remaining — "
+            f"Critic will catch any that slipped through"
+        )
+
+    return current, warnings
 
 
 def contains_banned_language(text: str) -> list[str]:
@@ -923,6 +1080,11 @@ def build_drafter_messages(
         "or to general common knowledge that any reader could verify. If you "
         "cannot point to where a claim comes from, do not include it. When "
         "in doubt, write general framing instead of a specific number.\n\n"
+        "Sentence length rule: every sentence in caption_hook and caption_body "
+        "must be 18 words or fewer. No exceptions. If a sentence needs more "
+        "than 18 words to make its point, split it into two shorter sentences. "
+        "Short, punchy sentences match the brand voice. Target 8-12 words per "
+        "sentence.\n\n"
         "Return your output as valid JSON only. No markdown fences, no "
         "commentary before or after the JSON."
     )
@@ -1031,6 +1193,7 @@ Return exactly this JSON shape (no markdown fences, no commentary):
 - The phone number for call CTAs is: {phone}
 - Never include pricing language (per pricing policy).
 - Anti-fabrication: no invented customer stories, no invented dollar amounts, no invented local statistics. See the rules in the system message. When in doubt, use general framing instead of a specific number or anecdote.
+- Every sentence in caption_hook and caption_body must be 18 words or fewer. Split long sentences rather than trimming meaning. Target 8-12 words per sentence for punchy, readable copy.
 {caption_target_reinforcement}
 {cta_constraint_reinforcement}
 - All text must pass the brand voice quality checklist.
@@ -2042,6 +2205,16 @@ def draft_single_row(
     parsed["creative_hook_text"] = clean_overlay_text(
         str(parsed.get("creative_hook_text", ""))
     )
+
+    # --- Step 5b: enforce sentence length (B6) ---
+    violations = find_sentence_length_violations(parsed)
+    sentence_rewrite_warnings: list[str] = []
+    if violations:
+        parsed, sentence_rewrite_warnings = rewrite_long_sentences(
+            violations, parsed,
+        )
+        for w in sentence_rewrite_warnings:
+            print(f"[drafter] {row_id}: {w}", file=sys.stderr)
 
     issues, full_caption = validate_llm_output(
         parsed=parsed,
