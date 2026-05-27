@@ -71,8 +71,9 @@ BANNED_PRICING_WORDS: tuple[str, ...] = (
     "cheap",
     "cheapest",
 )
-# $25, $1,500, $250/day, $1.5k — anything starting with `$` followed by digits.
-PRICING_DOLLAR_RE = re.compile(r"\$\s?\d")
+# $25, $1,500, $250/day, $1.5k — anything starting with `$` followed by a
+# digit, then any run of digits, commas, and decimals.
+PRICING_DOLLAR_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
 
 # Emoji detection — broad enough to catch common emoji ranges, narrow enough
 # to avoid false-positives on standard punctuation and accented Latin chars.
@@ -120,22 +121,35 @@ GBP_BUTTON_TYPES: set[str] = {
 }
 GBP_BUTTONS_REQUIRING_URL: set[str] = {"LEARN_MORE", "BOOK", "ORDER", "SIGN_UP"}
 
-# CTA-phrase signals used to count "how many CTAs are present" for E2.
-# Lower-cased substring match — best-effort, not exhaustive.
-CTA_PATTERNS: tuple[str, ...] = (
-    "call ",
-    "dm ",
-    "message us",
-    "send us a message",
-    "save this post",
-    "comment ",
-    "visit ",
-    "click ",
-    "tap the link",
-    "book ",
-    "get directions",
-    "stop by",
-    "swing by",
+# Strong CTA verbs — only counted when they appear at the start of a clause
+# (sentence start, or after "then"/"and"/"or"). This avoids false positives
+# on prepositional uses like "call for the right tool" or "Call us to book"
+# (where "book" follows "to" and is not the primary action).
+CTA_VERBS: tuple[str, ...] = (
+    "call",
+    "dm",
+    "message",
+    "save",
+    "comment",
+    "visit",
+    "click",
+    "tap",
+    "book",
+    "stop",
+    "swing",
+    "send",
+)
+
+# Match a CTA verb at the start of a clause. A clause begins at:
+#   - start of string
+#   - after a sentence terminator (`.!?`) and whitespace
+#   - after a clause connector (`then`, `and`, `or`, `also`, `plus`, comma)
+CTA_CLAUSE_START_RE = re.compile(
+    r"(?:^|(?<=[.!?]\s)|(?<=,\s)|"
+    r"(?<=\bthen\s)|(?<=\band\s)|(?<=\bor\s)|"
+    r"(?<=\balso\s)|(?<=\bplus\s))"
+    r"(" + "|".join(CTA_VERBS) + r")\b",
+    flags=re.IGNORECASE,
 )
 
 # Numeric-with-unit pattern used by G3 spec-rounding pre-check.
@@ -659,32 +673,42 @@ def check_gbp_button(
     return failures
 
 
-def check_one_cta(caption: str) -> list[dict]:
-    """E2 — count CTA-like phrases in caption.
+def check_one_cta(cta_text: str, caption: str = "") -> list[dict]:
+    """E2 — count CTA-like phrases.
 
-    Best-effort substring match. If more than one distinct CTA verb pattern
-    fires, flag as soft_fail. Single-CTA captions (even verbose ones) pass.
+    The CTA lives in the dedicated ``cta_text`` field — that is the
+    authoritative target for this check. Scanning the full caption is
+    unreliable because idiomatic English ("call for", "save you time",
+    "comment on") would produce false positives.
+
+    Falls back to the last paragraph of the caption only when ``cta_text``
+    is empty (some objectives intentionally omit the CTA via cta_type=none,
+    in which case nothing to check).
     """
-    if not caption:
-        return []
-    lowered = caption.lower()
-    hits: list[str] = []
-    for pattern in CTA_PATTERNS:
-        if pattern in lowered:
-            hits.append(pattern.strip())
-    # Deduplicate by leading verb.
-    distinct_verbs = sorted(set(h.split()[0] for h in hits if h))
+    target = (cta_text or "").strip()
+    if not target:
+        if not caption:
+            return []
+        # Last paragraph fallback when cta_text isn't populated.
+        parts = re.split(r"\n\s*\n", caption.strip())
+        target = parts[-1].strip() if parts else ""
+        if not target:
+            return []
+
+    matches = CTA_CLAUSE_START_RE.findall(target)
+    distinct_verbs = sorted({m.lower() for m in matches})
     if len(distinct_verbs) > 1:
         return [_make_failure(
             check_id="E2",
-            location="caption",
+            location="cta_text field",
             description=(
-                f"Multiple CTA verbs detected: {distinct_verbs}. Brand voice "
-                f"allows only one CTA per post."
+                f"Multiple CTA verbs detected in cta_text: "
+                f"{distinct_verbs}. Brand voice allows one CTA per post."
             ),
             fix_instruction=(
-                f"Keep only one of the CTAs ({distinct_verbs}). Remove the "
-                f"others; the post should have one clear next action."
+                f"Keep only one of the CTA verbs ({distinct_verbs}) in "
+                f"cta_text. Remove the others; the post should have one "
+                f"clear next action."
             ),
         )]
     return []
@@ -807,7 +831,10 @@ def run_deterministic_checks(
     failures.extend(check_creative_hook_text(creative_hook, caption_hook))
     failures.extend(check_caption_length(caption, platform))
     failures.extend(check_gbp_button(platform, cta_type, booking_url, website_url))
-    failures.extend(check_one_cta(caption))
+    failures.extend(check_one_cta(
+        cta_text=str(row.get(CQ_CTA_TEXT, "") or ""),
+        caption=caption,
+    ))
     failures.extend(check_spec_rounding(caption, catalog_item))
     failures.extend(check_catalog_status(catalog_item))
 
