@@ -13,7 +13,7 @@ Ranked by recommended usage frequency. The Strategist should draw from the top o
 5. **Local Connection** — North Florida seasonal context: rainy season prep, hurricane cleanup, spring building season, county-specific conditions. Strong on FB and GBP.
 6. **Job Story / Field Report** — Real project narratives from TES jobs. Requires real job material from Zeb. High engagement when available.
 7. **Comparison / Decision Helper** — Mini excavator vs. skid steer, zero tail swing vs. conventional, machine size selection guides. High value for GBP searchers deciding what to rent.
-8. **Social Proof / Customer Story** — High trust signal. Only assign when Zeb provides real customer feedback, reviews, or completed project outcomes. Never fabricate.
+8. **Social Proof / Customer Story** — High trust signal. 66 usable Google reviews are available in the Reviews Sheet (all 5-star, 5.0 average). The Strategist should include 1-2 Social Proof posts per platform per week. Prefer unused reviews first, then rotate by oldest-used. Never fabricate — always reference a real review from the sheet.
 9. **Promotional / Offer** — Use only when a real availability window, seasonal promotion, or new machine addition exists. Do not generate promotional content from thin inputs.
 
 **Default weighting guidance:** Types 1-5 should make up roughly 70% of the content mix. Types 6-9 are used when inputs are available and for variety.
@@ -23,10 +23,12 @@ Ranked by recommended usage frequency. The Strategist should draw from the top o
 ## Media Format Recommendations
 
 **Default split for posts requiring media:**
-- `image2_enhanced` (clean photo, no text): ~30% of posts — best for Behind-the-Scenes, equipment in context
-- `image2_text_overlay` (Image 2 photo + hook text): ~25% of posts — hook-driven scroll-stoppers
-- `creatomate_text_overlay` (Creatomate template + hook text): ~25% of posts — alternate with Image 2 for feed variety
-- `creatomate_video` (motion video from source still): ~20% of posts — equipment in motion, project reveals
+- `image2_enhanced` (clean photo, no text): ~25% of posts — best for Behind-the-Scenes, equipment in context
+- `image2_text_overlay` (Image 2 photo + hook text): ~22% of posts — hook-driven scroll-stoppers
+- `creatomate_text_overlay` (Creatomate template + hook text): ~22% of posts — alternate with Image 2 for feed variety
+- `creatomate_video` (motion video from source still): ~16% of posts — equipment in motion, project reveals
+- `creatomate_review_image` (review quote card): ~10% of posts — Social Proof content type
+- `creatomate_review_video` (motion review card): ~5% of posts — Social Proof variety
 
 **Text overlay alternation:** Alternate between `image2_text_overlay` and `creatomate_text_overlay` to keep the feed visually varied. Track the last 3 text-overlay posts per platform. If the last 2 used one tool, switch to the other.
 

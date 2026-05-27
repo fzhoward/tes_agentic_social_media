@@ -165,7 +165,7 @@ Each content type has a native objective lean (the objective it most naturally s
 
 ### 7. Social Proof / Customer Story
 
-**Definition:** Use a real customer experience, review, testimonial, completed project, or measurable outcome to build trust. Must be based on real, verifiable information provided by the business owner. Never fabricated.
+**Definition:** Use a real customer experience, review, testimonial, completed project, or measurable outcome to build trust. Must be based on real, verifiable information from a system data source — never fabricated.
 
 **Objective lean:** Lead generation
 
@@ -174,20 +174,25 @@ Each content type has a native objective lean (the objective it most naturally s
 - Instagram: Strong. Before/after visuals, project photos.
 - GBP: Strong. Reinforces trust signals for searchers evaluating the business.
 
+**Data source:** Reviews Sheet (`catalog.reviews_sheet_id`). The Strategist selects a `review_id` from rows where `usable_for_social=TRUE` and writes it onto the Content Queue row. The Drafter reads the selected row to pull review text, reviewer first name, and excerpts.
+
 **Required inputs:**
-- Real proof source (customer quote, review excerpt, project details, outcome data)
-- Permission or confirmation that the proof can be shared publicly
+- A `review_id` selected by the Strategist from the Reviews Sheet
+- The matching Reviews Sheet row (reviewer first name, star rating, review text, excerpts)
 - Connection to the business's value proposition
 
+**Media format:** `creatomate_review_image` (default) or `creatomate_review_video`. No other media format is valid for this content type, and the review formats are valid for no other content type.
+
 **Constraints:**
-- Do not fabricate customer stories, reviews, statistics, or outcomes.
+- Do not fabricate customer stories, reviews, statistics, or outcomes. Every Social Proof post must trace back to a real `review_id`.
 - Do not paraphrase reviews in a way that changes meaning.
-- If no proof source is provided, skip this content type. Do not generate it from thin inputs.
+- Only rows with `usable_for_social=TRUE` are eligible (5-star, non-empty text, meets minimum length).
+- If the Reviews Sheet is empty or unavailable, skip this content type for the batch.
 
 **Optional inputs:**
+- `focus_equipment_id` — pair the review with a catalog item when the review clearly maps to specific equipment or a job type. Enables the `photo_testimonial` (image) and `photo_reveal` (video) templates, which accept `Equipment-Photo`. Leave empty if no clear match.
 - Customer situation context
 - Before/after comparison
-- Specific catalog item involved
 
 ---
 
@@ -249,7 +254,7 @@ When planning the next batch of posts, the Strategist should:
 1. Check the variety constraint: no content type repeated consecutively on the same platform.
 2. Check the item constraint: no catalog item repeated within 7 days.
 3. Read the current objective ratio (brand awareness vs. lead generation) and select content types that correct any drift.
-4. Match content types to available inputs. Do not assign Social Proof if no proof source exists. Do not assign Behind-the-Scenes if no BTS material is available.
+4. Match content types to available inputs. Do not assign Social Proof if no `usable_for_social=TRUE` rows exist in the Reviews Sheet. Do not assign Behind-the-Scenes if no BTS material is available.
 5. Prefer content types with stronger platform fit for the target platform.
 6. Use performance data from Strategy Guidance to weight content types that are performing well.
 

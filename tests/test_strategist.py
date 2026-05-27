@@ -751,6 +751,222 @@ def test_enforce_video_requires_equipment_reassigns_when_focus_empty() -> None:
     )
 
 
+def _make_review_row(
+    review_id: str,
+    reviewer: str = "Sam",
+    usable: str = "TRUE",
+    length: str = "120",
+    times_used: str = "0",
+    excerpt_long: str | None = None,
+) -> dict:
+    return {
+        strategist.REV_REVIEW_ID: review_id,
+        strategist.REV_REVIEWER_FIRST_NAME: reviewer,
+        strategist.REV_STAR_RATING: "5",
+        strategist.REV_REVIEW_TEXT: "Excellent service, very helpful.",
+        strategist.REV_REVIEW_LENGTH: length,
+        strategist.REV_REVIEW_DATE: "2026-05-01T10:00:00Z",
+        strategist.REV_USABLE: usable,
+        strategist.REV_EXCERPT_LONG: excerpt_long or "Excellent service, very helpful…",
+        strategist.REV_EXCERPT_SHORT: "Excellent service…",
+        strategist.REV_LAST_USED_DATE: "",
+        strategist.REV_TIMES_USED: times_used,
+    }
+
+
+def test_filter_usable_reviews() -> None:
+    rows = [
+        _make_review_row("r1", usable="TRUE"),
+        _make_review_row("r2", usable="FALSE"),
+        _make_review_row("r3", usable="true"),  # case-insensitive
+        _make_review_row("r4", usable=""),
+        _make_review_row("r5", usable="TRUE"),
+    ]
+    out = strategist.filter_usable_reviews(rows)
+    ids = sorted(r[strategist.REV_REVIEW_ID] for r in out)
+    _check(
+        "19. filter_usable_reviews — keeps only TRUE (case-insensitive)",
+        ids == ["r1", "r3", "r5"],
+        f"ids={ids}",
+    )
+
+
+def test_compact_review_line_contains_required_fields() -> None:
+    review = _make_review_row(
+        "rid-42", reviewer="Pat", length="220", times_used="1",
+        excerpt_long="Great team, fair pricing.",
+    )
+    line = strategist._compact_review_line(review)
+    needed = [
+        "review_id=rid-42",
+        "reviewer=Pat",
+        "times_used=1",
+        "review_length=220",
+        "Great team",  # excerpt content present
+    ]
+    missing = [n for n in needed if n not in line]
+    _check(
+        "20. _compact_review_line includes review_id, reviewer, times_used, "
+        "review_length, excerpt",
+        not missing,
+        f"missing fragments: {missing}; line={line!r}",
+    )
+
+
+def test_validate_post_with_review_id() -> None:
+    window_start = datetime(2026, 5, 27, 0, 0, 0, tzinfo=strategist.ET)
+    window_end = datetime(2026, 6, 3, 0, 0, 0, tzinfo=strategist.ET)
+    active = {"facebook"}
+    eligible_items = {"TES-004"}
+    eligible_reviews = {"rev-1", "rev-2"}
+
+    good = {
+        "platform": "facebook",
+        "scheduled_datetime": "2026-05-28T09:00:00-04:00",
+        "objective": "lead_generation",
+        "content_type": "Social Proof / Customer Story",
+        "focus_equipment_id": "",
+        "angle": "Real customer review of the team.",
+        "cta_type": "call",
+        "media_format": "creatomate_review_image",
+        "review_id": "rev-1",
+    }
+    ok_good, _ = strategist.validate_post(
+        good, eligible_items, active, window_start, window_end,
+        eligible_review_ids=eligible_reviews,
+    )
+
+    # Bad: invented review_id.
+    bad = dict(good, review_id="rev-999")
+    ok_bad, reason_bad = strategist.validate_post(
+        bad, eligible_items, active, window_start, window_end,
+        eligible_review_ids=eligible_reviews,
+    )
+
+    # OK: review_id empty (validate_post doesn't enforce content-type matching).
+    no_rev = dict(good, review_id="")
+    ok_no_rev, _ = strategist.validate_post(
+        no_rev, eligible_items, active, window_start, window_end,
+        eligible_review_ids=eligible_reviews,
+    )
+
+    _check(
+        "21. validate_post — accepts known review_id, rejects unknown, allows empty",
+        ok_good and not ok_bad and ok_no_rev and "rev-999" in reason_bad,
+        f"good={ok_good}, bad={ok_bad} ({reason_bad!r}), no_rev={ok_no_rev}",
+    )
+
+
+def test_enforce_review_consistency() -> None:
+    posts = [
+        # 0: Social Proof + empty review_id → dropped.
+        {strategist.CQ_CONTENT_TYPE: "Social Proof / Customer Story",
+         strategist.CQ_REVIEW_ID: "",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_review_image",
+         strategist.CQ_SCHEDULED: "2026-05-28T09:00:00-04:00"},
+        # 1: non-Social Proof + non-empty review_id → review_id cleared, kept.
+        {strategist.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+         strategist.CQ_REVIEW_ID: "stray-rev",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_SCHEDULED: "2026-05-28T13:00:00-04:00"},
+        # 2: non-Social Proof + review media format → format reassigned.
+        {strategist.CQ_CONTENT_TYPE: "Educational Tip",
+         strategist.CQ_REVIEW_ID: "",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_review_image",
+         strategist.CQ_SCHEDULED: "2026-05-28T18:00:00-04:00"},
+        # 3: Social Proof + non-review media format → format reassigned.
+        {strategist.CQ_CONTENT_TYPE: "Social Proof / Customer Story",
+         strategist.CQ_REVIEW_ID: "rev-9",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_SCHEDULED: "2026-05-29T09:00:00-04:00"},
+        # 4: clean Social Proof — untouched.
+        {strategist.CQ_CONTENT_TYPE: "Social Proof / Customer Story",
+         strategist.CQ_REVIEW_ID: "rev-10",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_review_video",
+         strategist.CQ_SCHEDULED: "2026-05-30T09:00:00-04:00"},
+    ]
+
+    kept, warnings = strategist.enforce_review_consistency(posts)
+
+    cleared = posts[1][strategist.CQ_REVIEW_ID]
+    reassigned_tip = posts[2][strategist.CQ_MEDIA_FORMAT]
+    reassigned_sp = posts[3][strategist.CQ_MEDIA_FORMAT]
+    untouched = posts[4][strategist.CQ_MEDIA_FORMAT]
+
+    _check(
+        "22. enforce_review_consistency — drops empty-Social-Proof, clears stray "
+        "review_id, reassigns media formats in both directions",
+        len(kept) == 4
+        and cleared == ""
+        and reassigned_tip == strategist.DEFAULT_EQUIPMENT_MEDIA_FORMAT
+        and reassigned_sp == strategist.DEFAULT_REVIEW_MEDIA_FORMAT
+        and untouched == "creatomate_review_video"
+        and len(warnings) == 4,
+        f"kept={len(kept)}, cleared={cleared!r}, tip_fmt={reassigned_tip}, "
+        f"sp_fmt={reassigned_sp}, untouched={untouched}, warnings={warnings}",
+    )
+
+
+def test_enforce_image_coverage_skips_review_formats() -> None:
+    catalog_by_id = {
+        "TES-NOIMG": {
+            strategist.CAT_ITEM_ID: "TES-NOIMG",
+            strategist.CAT_IMAGE_COUNT: "0",
+        },
+    }
+    posts = [
+        # Equipment post on zero-image item is still dropped.
+        {strategist.CQ_FOCUS_EQUIPMENT: "TES-NOIMG",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_SCHEDULED: "2026-05-28T09:00:00-04:00"},
+        # Review-format post on zero-image item is KEPT (template handles it).
+        {strategist.CQ_FOCUS_EQUIPMENT: "TES-NOIMG",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_review_image",
+         strategist.CQ_SCHEDULED: "2026-05-28T13:00:00-04:00"},
+    ]
+    kept, warnings = strategist.enforce_image_coverage(posts, catalog_by_id)
+    formats_kept = [p[strategist.CQ_MEDIA_FORMAT] for p in kept]
+    _check(
+        "23. enforce_image_coverage — review formats bypass the zero-image drop",
+        formats_kept == ["creatomate_review_image"]
+        and len(warnings) == 1,
+        f"kept_formats={formats_kept}, warnings={warnings}",
+    )
+
+
+def test_enforce_video_cap_covers_review_video() -> None:
+    base = datetime(2026, 5, 27, 9, 0, 0, tzinfo=strategist.ET)
+    # 2 creatomate_video + 2 creatomate_review_video on FB → 2 over cap of 2.
+    # The third and fourth video on the platform get converted; the first two
+    # (whichever sort earliest) stay as videos.
+    posts = [
+        {"platform": "facebook", "media_format": "creatomate_video",
+         "scheduled_datetime": (base + timedelta(days=0)).isoformat()},
+        {"platform": "facebook", "media_format": "creatomate_review_video",
+         "scheduled_datetime": (base + timedelta(days=1)).isoformat()},
+        {"platform": "facebook", "media_format": "creatomate_video",
+         "scheduled_datetime": (base + timedelta(days=2)).isoformat()},
+        {"platform": "facebook", "media_format": "creatomate_review_video",
+         "scheduled_datetime": (base + timedelta(days=3)).isoformat()},
+    ]
+    out, warnings = strategist.enforce_video_cap(posts, max_per_platform=2)
+
+    formats = [p["media_format"] for p in out]
+    video_total = sum(1 for f in formats if f in {"creatomate_video", "creatomate_review_video"})
+    # The two converted posts must use the right replacement per original kind.
+    has_text_overlay_replacement = "creatomate_text_overlay" in formats
+    has_review_image_replacement = "creatomate_review_image" in formats
+
+    _check(
+        "24. enforce_video_cap — combined video cap, replacements respect kind",
+        video_total == 2
+        and has_text_overlay_replacement
+        and has_review_image_replacement
+        and len(warnings) == 2,
+        f"formats={formats}, video_total={video_total}, warnings={warnings}",
+    )
+
+
 def test_dry_run_full(config) -> None:  # type: ignore[no-untyped-def]
     # =================================================================
     # INTEGRATION TEST — calls the live Anthropic API. COSTS MONEY.
@@ -847,6 +1063,12 @@ def run_tests() -> int:
     test_compact_catalog_line_flags_zero_image_items()
     test_enforce_image_coverage_drops_zero_image_media_posts()
     test_enforce_video_requires_equipment_reassigns_when_focus_empty()
+    test_filter_usable_reviews()
+    test_compact_review_line_contains_required_fields()
+    test_validate_post_with_review_id()
+    test_enforce_review_consistency()
+    test_enforce_image_coverage_skips_review_formats()
+    test_enforce_video_cap_covers_review_video()
 
     print()
     print("Integration test (calls Anthropic API — COSTS MONEY):")

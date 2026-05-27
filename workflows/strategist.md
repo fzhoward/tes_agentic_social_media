@@ -18,6 +18,7 @@ The Strategist is the system's editorial planner. It produces a rolling content 
 | Input | Source | Purpose |
 |-------|--------|---------|
 | Catalog sheet | Google Sheets (`catalog.spec_sheet_id`) | What items are available to feature, their specs, tags, categories, `last_posted`, `post_count` |
+| Reviews sheet | Google Sheets (`catalog.reviews_sheet_id`) | Available customer reviews for Social Proof content — reviewer name, star rating, review text, excerpts, usage tracking |
 | Content Queue sheet | Google Sheets (`drive.content_queue_sheet_id`) | Current planned/drafted/published posts — used to avoid duplicates, honor variety constraints, and check queue depth |
 | Performance Log sheet | Google Sheets (`drive.performance_log_sheet_id`) | Recent post performance — used for objective ratio correction and content type weighting |
 | Strategy Guidance | Drive file (`drive.strategy_guidance_file_id`) | Evolving playbook written by the Learning Agent — content type rankings, timing recommendations, pattern insights |
@@ -53,6 +54,7 @@ Each row the Strategist writes contains:
 | `media_format` | enum | Strategist | `image2_enhanced`, `image2_text_overlay`, `creatomate_text_overlay`, `creatomate_video` |
 | `text_overlay` | boolean | Strategist | Whether the image should include hook text overlay. Derived from `media_format` (true for `image2_text_overlay` and `creatomate_text_overlay`, false for `image2_enhanced` and `creatomate_video`) |
 | `source_image_id` | string (nullable) | Strategist | Drive file ID of the recommended source photo from the catalog item's images. Nullable if the Drafter should select. |
+| `review_id` | string (nullable) | Strategist | GBP review ID from the Reviews Sheet. Set only for Social Proof posts. The Drafter uses this to look up review text, reviewer name, and excerpt for Creatomate templates. Empty for all other content types. |
 | `draft_notes` | string | Strategist | Any additional context for the Drafter: seasonal tie-in, experience angle to use, specific spec to highlight |
 
 ## Processing Steps
@@ -80,6 +82,7 @@ For each post slot in the batch, select a content type using:
 3. **Platform fit** — reference Content Type Definitions for which types are strong/moderate/weak on each platform
 4. **Calendar fit** — if Local Calendar has a seasonal beat in the planning window, preferentially pick content types that match
 5. **Objective alignment** — pick content types whose native lean matches the needed objective, or explicitly override the lean with appropriate framing
+6. **Review data availability** — Social Proof / Customer Story content type requires at least one usable review in the Reviews Sheet (`usable_for_social=TRUE`). If no usable reviews exist, do not plan Social Proof posts. If reviews are available, include Social Proof in the content mix — aim for 1-2 Social Proof posts per platform per week when 66+ usable reviews are available.
 
 ### 5. Select Catalog Items
 
@@ -89,6 +92,17 @@ For each post that features a catalog item:
 2. **Underrepresented items first** — favor items with low `post_count` relative to others in the same category
 3. **Spec richness** — favor items with populated spec fields (they produce more specific, higher-quality posts)
 4. **Active/seasonal only** — only select items with `status` = `active` or `seasonal`
+
+### 5a. Select Review (Social Proof posts only)
+
+When a post is assigned content type Social Proof / Customer Story:
+
+1. Read the Reviews Sheet (filtered to `usable_for_social=TRUE`)
+2. Prefer reviews with `times_used = 0` (unused reviews first)
+3. Among unused reviews, prefer longer reviews (`review_length` descending) — they give the Drafter more material
+4. If all reviews have been used at least once, pick the review with the oldest `last_used_date`
+5. Write the selected `review_id` to the Content Queue row
+6. Optionally pair with a catalog item — if the review mentions specific equipment or a job type that maps to a catalog item, set `focus_equipment_id` to that item. This enables the `photo_testimonial` and `photo_reveal` templates that accept `Equipment-Photo`. If no clear equipment match, leave `focus_equipment_id` empty.
 
 ### 6. Assign Media Format
 
@@ -100,6 +114,10 @@ For each post, assign one of the four media formats:
 | `image2_text_overlay` | Posts where the hook text on the image is the scroll-stopper. Alternates with `creatomate_text_overlay` for variety. |
 | `creatomate_text_overlay` | Same use case as `image2_text_overlay`. Alternates with it to keep the feed visually fresh. |
 | `creatomate_video` | Short motion video from a source still. Use for variety — no more than 2 video posts per platform per week unless Strategy Guidance recommends more. |
+| `creatomate_review_image` | Social Proof posts — static review card. Default for Social Proof. |
+| `creatomate_review_video` | Social Proof posts — motion review card. Use for variety, same frequency rules as `creatomate_video` (max 2 video posts per platform per week). |
+
+**Review media format scoping:** Social Proof posts always use `creatomate_review_image` or `creatomate_review_video`. They never use `image2_enhanced`, `image2_text_overlay`, `creatomate_text_overlay`, or `creatomate_video` — those are for equipment-based content types. Likewise, non–Social Proof content types never use the review formats.
 
 **Variety rules for text overlay alternation:**
 - Track the last 3 text-overlay posts per platform
@@ -163,6 +181,7 @@ None at the planning step. The human gate is at approval (after Drafter + Critic
 | Performance Log empty (first run) | Use default objective ratio and generic timing — no performance data to correct against. Log info message. |
 | Strategy Guidance missing (first run) | Use default content type weights and timing — no learned patterns yet. Log info message. |
 | Local Calendar missing or empty | Skip calendar-based content type selection. Rely on seasonality from experience context only. |
+| Reviews sheet empty or inaccessible | Skip Social Proof content type selection. Plan other content types normally. Log info message. |
 | All queue slots already filled | No new rows written. Silent success. |
 
 ## Failure Mode
@@ -214,6 +233,7 @@ The Strategist returns structured JSON to Make.com:
 | `approval.max_queue_depth` | Max planned+awaiting posts before pausing |
 | `platforms.active` | Which platforms to plan for |
 | `catalog.spec_sheet_id` | Catalog sheet |
+| `catalog.reviews_sheet_id` | Reviews sheet for Social Proof content planning |
 | `drive.content_queue_sheet_id` | Content Queue sheet |
 | `drive.performance_log_sheet_id` | Performance Log sheet |
 | `drive.strategy_guidance_file_id` | Strategy Guidance file |

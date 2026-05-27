@@ -59,9 +59,22 @@ MEDIA_FORMATS: list[str] = [
     "image2_text_overlay",
     "creatomate_text_overlay",
     "creatomate_video",
+    "creatomate_review_image",
+    "creatomate_review_video",
 ]
 
 TEXT_OVERLAY_FORMATS: set[str] = {"image2_text_overlay", "creatomate_text_overlay"}
+
+REVIEW_MEDIA_FORMATS: set[str] = {"creatomate_review_image", "creatomate_review_video"}
+
+# Default review media format used when correcting an invalid assignment.
+DEFAULT_REVIEW_MEDIA_FORMAT: str = "creatomate_review_image"
+
+# Equipment-side default used when the LLM assigns a review media format to a
+# non–Social Proof post.
+DEFAULT_EQUIPMENT_MEDIA_FORMAT: str = "image2_enhanced"
+
+SOCIAL_PROOF_CONTENT_TYPE: str = "Social Proof / Customer Story"
 
 OBJECTIVES: list[str] = ["brand_awareness", "lead_generation"]
 
@@ -117,7 +130,21 @@ CQ_CTA_TYPE = "cta_type"
 CQ_MEDIA_FORMAT = "media_format"
 CQ_TEXT_OVERLAY = "text_overlay"
 CQ_SOURCE_IMAGE = "source_image_id"
+CQ_REVIEW_ID = "review_id"
 CQ_DRAFT_NOTES = "draft_notes"
+
+# Reviews Sheet columns referenced by the Strategist.
+REV_REVIEW_ID = "review_id"
+REV_REVIEWER_FIRST_NAME = "reviewer_first_name"
+REV_STAR_RATING = "star_rating"
+REV_REVIEW_TEXT = "review_text"
+REV_REVIEW_LENGTH = "review_length"
+REV_REVIEW_DATE = "review_date"
+REV_USABLE = "usable_for_social"
+REV_EXCERPT_LONG = "excerpt_long"
+REV_EXCERPT_SHORT = "excerpt_short"
+REV_LAST_USED_DATE = "last_used_date"
+REV_TIMES_USED = "times_used"
 
 # Catalog columns referenced by the Strategist.
 CAT_ITEM_ID = "item_id"
@@ -361,6 +388,43 @@ def calculate_objective_correction(
     }
 
 
+# --- Reviews loading and formatting ---
+
+def filter_usable_reviews(review_rows: list[dict]) -> list[dict]:
+    """Return rows where `usable_for_social` is truthy (case-insensitive TRUE)."""
+    usable: list[dict] = []
+    for row in review_rows:
+        flag = str(row.get(REV_USABLE, "")).strip().upper()
+        if flag == "TRUE":
+            usable.append(row)
+    return usable
+
+
+def _parse_int(raw: Any) -> int:
+    try:
+        return int(str(raw).strip() or "0")
+    except (TypeError, ValueError):
+        return 0
+
+
+def _compact_review_line(review: dict) -> str:
+    """One-line summary of a review for the LLM prompt.
+
+    Includes review_id, reviewer_first_name, excerpt_long, times_used, and
+    review_length — enough metadata for the LLM to make a selection decision
+    without dumping the full review text.
+    """
+    excerpt = str(review.get(REV_EXCERPT_LONG, "")).strip()
+    parts = [
+        f"review_id={review.get(REV_REVIEW_ID, '')}",
+        f"reviewer={review.get(REV_REVIEWER_FIRST_NAME, '')}",
+        f"times_used={review.get(REV_TIMES_USED, '0')}",
+        f"review_length={review.get(REV_REVIEW_LENGTH, '')}",
+        f"excerpt={excerpt!r}",
+    ]
+    return " | ".join(parts)
+
+
 # --- Step 5: Catalog filtering ---
 
 def _parse_post_count(raw: Any) -> int:
@@ -507,6 +571,7 @@ def assemble_prompt(
     window_start: datetime,
     window_end: datetime,
     min_gap_hours: int,
+    usable_reviews: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Return (system_message, user_message) for the LLM call."""
     business_name = config.get("business.name")
@@ -529,7 +594,7 @@ def assemble_prompt(
     media_format_rules = (
         "Allowed media_format values (pick one per post):\n"
         "  - image2_enhanced: AI-generated photorealistic image, no text overlay. "
-        "Default for most posts.\n"
+        "Default for most equipment-focused posts.\n"
         "  - image2_text_overlay: AI-generated image with bold text overlay added via "
         "OpenAI Image 2. Use for hook-driven posts.\n"
         "  - creatomate_text_overlay: Existing equipment photo from catalog with "
@@ -537,8 +602,16 @@ def assemble_prompt(
         "branded text treatment.\n"
         "  - creatomate_video: Short MP4 with motion + text overlay from Creatomate. "
         "Use sparingly. Max 2 per platform per week.\n"
+        "  - creatomate_review_image: Static review card built from a real Reviews "
+        "Sheet row. ONLY for Social Proof / Customer Story posts. Default for Social "
+        "Proof.\n"
+        "  - creatomate_review_video: Motion review card. ONLY for Social Proof / "
+        "Customer Story posts. Counts against the same 2-per-platform-per-week video "
+        "cap as creatomate_video.\n"
         "Alternate text-overlay and non-text-overlay posts across the week so the "
-        "feed reads varied."
+        "feed reads varied. Social Proof posts MUST use a review media format "
+        "(creatomate_review_image or creatomate_review_video) and no other content "
+        "type may use the review formats."
     )
 
     content_type_lines = "\n".join(f"  - {ct}" for ct in CONTENT_TYPES)
@@ -565,6 +638,9 @@ def assemble_prompt(
         "require catalog grounding — only specific product attribute claims do.\n"
         "  cta_type: one of " + cta_lines + "\n"
         "  media_format: one of " + ", ".join(MEDIA_FORMATS) + "\n"
+        "  review_id: REQUIRED (non-empty) for Social Proof / Customer Story posts — "
+        "must be a review_id from the eligible reviews list below. EMPTY string for "
+        "every other content type. Never invent a review_id.\n"
         "  draft_notes: additional context for the Drafter (seasonal tie-in, spec to "
         "highlight, experience angle). Keep it concrete."
     )
@@ -582,12 +658,37 @@ def assemble_prompt(
         "that item. When the catalog doesn't list a spec, keep the angle to generic "
         "framing (use cases, conditions, job context) and let the Drafter add "
         "specifics from its own catalog lookup. "
+        "You never invent reviews — Social Proof / Customer Story posts must use a "
+        "real review_id from the eligible reviews list, paired with a review media "
+        "format (creatomate_review_image or creatomate_review_video). "
         "You distribute posts evenly across the planning window."
     )
 
     cta_summary = _truncate(cta_skill, CTA_MAX_CHARS)
     brand_voice_summary = _truncate(brand_voice, BRAND_VOICE_MAX_CHARS)
     platform_style_summary = _truncate(platform_style, PLATFORM_STYLE_MAX_CHARS)
+
+    usable_reviews = usable_reviews or []
+    if usable_reviews:
+        review_lines = "\n".join(_compact_review_line(r) for r in usable_reviews)
+        review_count = len(usable_reviews)
+        review_section = (
+            f"# Available Reviews ({review_count} usable)\n\n"
+            f"Pick review_id values from this list when planning Social Proof / "
+            f"Customer Story posts. Prefer reviews with times_used=0 (unused) "
+            f"first; among those, prefer longer reviews (higher review_length) "
+            f"since they give the Drafter more material. If all reviews have been "
+            f"used at least once, prefer the oldest last_used_date. Never invent a "
+            f"review_id. Aim for 1-2 Social Proof posts per platform per week when "
+            f"plenty of usable reviews are available.\n\n"
+            f"{review_lines}\n"
+        )
+    else:
+        review_section = (
+            "# Available Reviews\n\n"
+            "(none — Reviews Sheet is empty or unavailable. Do NOT plan any "
+            "Social Proof / Customer Story posts this batch.)\n"
+        )
 
     user_message = f"""# Business Context
 
@@ -632,7 +733,9 @@ Distribute posts evenly across the 7-day window. Pick concrete scheduled_datetim
 Use only these exact strings for content_type:
 {content_type_lines}
 
-Across a full 7-day planning cycle, aim to use at least 6 of the 9 content types. If a content type requires inputs you don't have (e.g., Social Proof requires a real customer review, Job Story requires real job details, Promotional requires a real offer or availability window), skip it — don't fabricate to fill the slot. But don't skip types just because they're less familiar: Comparison / Decision Helper, Educational Tip, and Local Connection don't require owner-supplied source material and should appear regularly across the week.
+Across a full 7-day planning cycle, aim to use at least 6 of the 9 content types. If a content type requires inputs you don't have (Job Story requires real job details, Promotional requires a real offer or availability window), skip it — don't fabricate to fill the slot. But don't skip types just because they're less familiar: Comparison / Decision Helper, Educational Tip, and Local Connection don't require owner-supplied source material and should appear regularly across the week.
+
+Social Proof / Customer Story is available whenever the "Available Reviews" section below is non-empty. When reviews are available, include 1-2 Social Proof posts per platform per week, each one tied to a real review_id from that list. When the section says (none), do not plan Social Proof at all.
 
 # Media Format Rules
 
@@ -650,6 +753,7 @@ Note: creatomate_video also requires a source image. Never assign creatomate_vid
 
 {recent_lines}
 
+{review_section}
 # Output
 
 {output_schema}
@@ -713,6 +817,7 @@ def validate_post(
     active_platforms: set[str],
     window_start: datetime,
     window_end: datetime,
+    eligible_review_ids: set[str] | None = None,
 ) -> tuple[bool, str]:
     """Return (is_valid, reason). reason is empty when valid."""
     if not isinstance(post, dict):
@@ -754,6 +859,16 @@ def validate_post(
             f"scheduled_datetime {dt.isoformat()} outside window "
             f"[{window_start.isoformat()}, {window_end.isoformat()}]"
         )
+
+    # review_id is only consulted when caller passes an eligible set; the field
+    # itself is optional in the LLM output but, when present, must correspond to
+    # a real review row.
+    review_id = str(post.get(CQ_REVIEW_ID, "")).strip()
+    if review_id and eligible_review_ids is not None:
+        if review_id not in eligible_review_ids:
+            return False, (
+                f"review_id {review_id!r} not in eligible reviews"
+            )
 
     return True, ""
 
@@ -890,6 +1005,13 @@ def enforce_image_coverage(
         if not focus_id or not media_format:
             kept.append(post)
             continue
+        # Review media formats don't strictly require an equipment photo —
+        # the Drafter picks a template (photo_testimonial/photo_reveal vs.
+        # the text-only variants) based on what's available. Keep the post
+        # and let the Drafter decide.
+        if media_format in REVIEW_MEDIA_FORMATS:
+            kept.append(post)
+            continue
         item = catalog_by_id.get(focus_id)
         if item is None or not _has_no_images(item):
             kept.append(post)
@@ -931,6 +1053,66 @@ def enforce_video_requires_equipment(
             f"{replacement_format!r} (scheduled_datetime={scheduled!r})"
         )
     return warnings
+
+
+def enforce_review_consistency(
+    posts: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """Enforce Social Proof <-> review_id / review-media-format consistency.
+
+    Rules:
+      - Social Proof post with empty review_id is dropped (cannot be drafted).
+      - Non–Social Proof post with non-empty review_id has review_id cleared.
+      - Non–Social Proof post with a review media_format has it reassigned to
+        the equipment default. Warning emitted.
+      - Social Proof post with a non-review media_format is reassigned to the
+        review default. Warning emitted.
+
+    Returns (kept_posts, warnings).
+    """
+    kept: list[dict] = []
+    warnings: list[str] = []
+    for post in posts:
+        content_type = str(post.get(CQ_CONTENT_TYPE, "")).strip()
+        review_id = str(post.get(CQ_REVIEW_ID, "")).strip()
+        media_format = str(post.get(CQ_MEDIA_FORMAT, "")).strip()
+        scheduled = post.get(CQ_SCHEDULED, "")
+        is_social_proof = content_type == SOCIAL_PROOF_CONTENT_TYPE
+
+        if is_social_proof and not review_id:
+            warnings.append(
+                f"Social Proof post dropped: review_id is empty "
+                f"(scheduled_datetime={scheduled!r})"
+            )
+            continue
+
+        if not is_social_proof and review_id:
+            warnings.append(
+                f"non-Social Proof post had review_id={review_id!r} — cleared "
+                f"(content_type={content_type!r}, scheduled_datetime={scheduled!r})"
+            )
+            post[CQ_REVIEW_ID] = ""
+
+        if not is_social_proof and media_format in REVIEW_MEDIA_FORMATS:
+            warnings.append(
+                f"non-Social Proof post had review media_format={media_format!r} — "
+                f"reassigned to {DEFAULT_EQUIPMENT_MEDIA_FORMAT!r} "
+                f"(content_type={content_type!r}, scheduled_datetime={scheduled!r})"
+            )
+            post[CQ_MEDIA_FORMAT] = DEFAULT_EQUIPMENT_MEDIA_FORMAT
+            post[CQ_TEXT_OVERLAY] = derive_text_overlay(DEFAULT_EQUIPMENT_MEDIA_FORMAT)
+
+        if is_social_proof and media_format not in REVIEW_MEDIA_FORMATS:
+            warnings.append(
+                f"Social Proof post had non-review media_format={media_format!r} — "
+                f"reassigned to {DEFAULT_REVIEW_MEDIA_FORMAT!r} "
+                f"(scheduled_datetime={scheduled!r})"
+            )
+            post[CQ_MEDIA_FORMAT] = DEFAULT_REVIEW_MEDIA_FORMAT
+            post[CQ_TEXT_OVERLAY] = derive_text_overlay(DEFAULT_REVIEW_MEDIA_FORMAT)
+
+        kept.append(post)
+    return kept, warnings
 
 
 def apply_angle_grounding_check(
@@ -997,7 +1179,13 @@ def enforce_video_cap(
     posts: list[dict],
     max_per_platform: int = MAX_VIDEOS_PER_PLATFORM,
 ) -> tuple[list[dict], list[str]]:
-    """Convert excess creatomate_video posts to creatomate_text_overlay.
+    """Convert excess video posts to a static equivalent.
+
+    Both creatomate_video and creatomate_review_video count against the same
+    per-platform-per-week cap. Excess equipment videos convert to
+    creatomate_text_overlay; excess review videos convert to
+    creatomate_review_image so the Social Proof / review-format pairing stays
+    valid.
 
     Returns (posts, warnings).
     """
@@ -1007,17 +1195,28 @@ def enforce_video_cap(
         platform = str(p.get("platform", "")).strip().lower()
         by_platform[platform].append(p)
 
+    video_formats = {"creatomate_video", "creatomate_review_video"}
+    replacement = {
+        "creatomate_video": "creatomate_text_overlay",
+        "creatomate_review_video": "creatomate_review_image",
+    }
+
     for platform, plist in by_platform.items():
         plist.sort(key=lambda r: _parse_dt(r.get("scheduled_datetime", "")) or datetime.max.replace(tzinfo=ET))
         video_count = 0
         for p in plist:
-            if str(p.get("media_format", "")).strip() == "creatomate_video":
+            current = str(p.get("media_format", "")).strip()
+            if current in video_formats:
                 video_count += 1
                 if video_count > max_per_platform:
-                    p["media_format"] = "creatomate_text_overlay"
+                    new_fmt = replacement[current]
+                    p["media_format"] = new_fmt
+                    # Keep derived text_overlay aligned with the new format.
+                    if CQ_TEXT_OVERLAY in p:
+                        p[CQ_TEXT_OVERLAY] = derive_text_overlay(new_fmt)
                     warnings.append(
-                        f"platform {platform}: converted excess creatomate_video to "
-                        f"creatomate_text_overlay (scheduled_datetime="
+                        f"platform {platform}: converted excess {current} to "
+                        f"{new_fmt} (scheduled_datetime="
                         f"{p.get('scheduled_datetime')})"
                     )
     return posts, warnings
@@ -1058,10 +1257,39 @@ def assign_row_ids(posts: list[dict]) -> list[dict]:
         p[CQ_STATUS] = "planned"
         p[CQ_TEXT_OVERLAY] = derive_text_overlay(p.get("media_format", ""))
         p[CQ_SOURCE_IMAGE] = ""
+        # Normalise review_id so missing keys become empty strings consistently.
+        p[CQ_REVIEW_ID] = str(p.get(CQ_REVIEW_ID, "") or "").strip()
     return posts_sorted
 
 
 # --- Step 11: Write to Content Queue ---
+
+def _ensure_header(
+    spreadsheet_id: str,
+    tab_name: str,
+    header_name: str,
+    service: Any,
+) -> list[str]:
+    """Ensure `header_name` exists in row 1; append it at the right if missing.
+
+    Returns the up-to-date list of headers.
+    """
+    headers = sheets_helpers._get_headers(spreadsheet_id, tab_name, service=service)
+    if header_name in headers:
+        return headers
+    new_col_letter = sheets_helpers._col_letter(len(headers))
+    quoted_tab = sheets_helpers._quote_tab(tab_name)
+    sheets_helpers._execute_with_retry(
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{quoted_tab}!{new_col_letter}1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[header_name]]},
+        )
+    )
+    sheets_helpers._invalidate_header_cache(spreadsheet_id, tab_name)
+    return sheets_helpers._get_headers(spreadsheet_id, tab_name, service=service)
+
 
 def write_posts_to_queue(
     posts: list[dict],
@@ -1070,7 +1298,10 @@ def write_posts_to_queue(
     service: Any,
 ) -> int:
     """Append each post as a new row. Returns the number of rows written."""
-    headers = sheets_helpers._get_headers(spreadsheet_id, tab_name, service=service)
+    # Ensure the Content Queue has a `review_id` column before writing.
+    # append_row silently drops keys missing from the header row, so a
+    # newly-introduced field needs its column created the first time.
+    headers = _ensure_header(spreadsheet_id, tab_name, CQ_REVIEW_ID, service)
     written = 0
     for post in posts:
         row_dict = {h: "" for h in headers}
@@ -1128,6 +1359,7 @@ def run(dry_run: bool = False) -> dict:
 
     # --- Load config values ---
     catalog_id = config.get("catalog.spec_sheet_id")
+    reviews_id = config.get("catalog.reviews_sheet_id", "")
     queue_id = config.get("drive.content_queue_sheet_id")
     performance_id = config.get("drive.performance_log_sheet_id")
     platforms_active: list[str] = list(config.get("platforms.active"))
@@ -1181,6 +1413,34 @@ def run(dry_run: bool = False) -> dict:
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
+
+    # Reviews sheet is optional — empty/missing/unreadable just means no Social
+    # Proof posts this batch.
+    usable_reviews: list[dict] = []
+    if reviews_id:
+        try:
+            reviews_tab = _first_tab(service, reviews_id)
+            reviews_rows = sheets_helpers.read_all_rows(
+                reviews_id, reviews_tab, service=service
+            )
+            usable_reviews = filter_usable_reviews(reviews_rows)
+            print(
+                f"[strategist] INFO: loaded {len(usable_reviews)} usable reviews "
+                f"(of {len(reviews_rows)} total)",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            print(
+                f"[strategist] WARN: could not read reviews sheet: "
+                f"{type(exc).__name__}: {exc} — Social Proof skipped this batch",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            "[strategist] INFO: catalog.reviews_sheet_id is empty — Social Proof "
+            "skipped this batch",
+            file=sys.stderr,
+        )
 
     # --- Step 2: queue depth ---
     active_platforms, skipped_platforms, depth_counts = check_queue_depth(
@@ -1260,7 +1520,14 @@ def run(dry_run: bool = False) -> dict:
         window_start=window_start,
         window_end=window_end,
         min_gap_hours=min_gap_hours,
+        usable_reviews=usable_reviews,
     )
+
+    eligible_review_ids = {
+        str(r.get(REV_REVIEW_ID, "")).strip()
+        for r in usable_reviews
+        if str(r.get(REV_REVIEW_ID, "")).strip()
+    }
 
     try:
         raw_output = call_llm(system_msg, user_msg)
@@ -1283,14 +1550,26 @@ def run(dry_run: bool = False) -> dict:
     active_set = set(active_platforms)
     for idx, post in enumerate(parsed_posts):
         ok, reason = validate_post(
-            post, eligible_item_ids, active_set, window_start, window_end
+            post,
+            eligible_item_ids,
+            active_set,
+            window_start,
+            window_end,
+            eligible_review_ids=eligible_review_ids,
         )
         if ok:
             valid_posts.append(post)
         else:
             validation_warnings.append(f"post[{idx}] dropped: {reason}")
 
-    # --- Step 8b: image-coverage + video-requires-equipment enforcement ---
+    # --- Step 8b: review consistency enforcement ---
+    # Runs before image-coverage so Social Proof posts (which don't need a
+    # catalog image even when focus_equipment_id is set) aren't dropped for
+    # the wrong reason and so review-format reassignments happen first.
+    valid_posts, review_warnings = enforce_review_consistency(valid_posts)
+    validation_warnings.extend(review_warnings)
+
+    # --- Step 8c: image-coverage + video-requires-equipment enforcement ---
     catalog_by_id = {
         str(item.get(CAT_ITEM_ID, "")): item for item in eligible_items
     }
