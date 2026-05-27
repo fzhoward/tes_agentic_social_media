@@ -718,6 +718,272 @@ def test_update_review_usage_missing_review() -> None:
     )
 
 
+def test_creative_hook_text_validation_max_words() -> None:
+    """creative_hook_text must be ≤ 7 words. 8+ words fails."""
+    ok_short, _ = drafter.validate_creative_hook_text(
+        "Tight site reach", "Caption hook is a different idea.",
+    )
+    ok_seven, _ = drafter.validate_creative_hook_text(
+        "Real reach without tearing up the lot",
+        "Caption hook is a different idea.",
+    )
+    too_long = "This hook has eight clear words which exceeds"
+    ok_long, reason_long = drafter.validate_creative_hook_text(
+        too_long, "Caption hook is a different idea.",
+    )
+    ok_empty, reason_empty = drafter.validate_creative_hook_text(
+        "", "Some caption hook.",
+    )
+    _check(
+        "20. validate_creative_hook_text — 1-7 words pass, 8+ fails, empty fails",
+        ok_short and ok_seven
+        and (not ok_long) and "7" in reason_long
+        and (not ok_empty) and "empty" in reason_empty.lower(),
+        f"short={ok_short}, seven={ok_seven}, long_ok={ok_long} ({reason_long!r}), "
+        f"empty_ok={ok_empty} ({reason_empty!r})",
+    )
+
+
+def test_creative_hook_text_validation_distinct_from_caption() -> None:
+    """creative_hook_text must not be a substring of caption_hook
+    (or vice versa), case-insensitive."""
+    # Identical → fail.
+    ok_identical, reason_id = drafter.validate_creative_hook_text(
+        "Tight site reach", "Tight site reach",
+    )
+    # creative is substring of caption → fail.
+    ok_sub_a, reason_a = drafter.validate_creative_hook_text(
+        "Tight site reach",
+        "Tight site reach without tearing up your lawn.",
+    )
+    # caption is substring of creative → fail.
+    ok_sub_b, reason_b = drafter.validate_creative_hook_text(
+        "Real reach. Tight site. No swing damage",
+        "Real reach",
+    )
+    # Different phrasing → pass.
+    ok_distinct, _ = drafter.validate_creative_hook_text(
+        "Zero swing wins",
+        "Watch the back fence stay intact while we dig.",
+    )
+    # Empty caption_hook should not block creative (validation handled by
+    # caption_hook=empty check elsewhere).
+    ok_empty_caption, _ = drafter.validate_creative_hook_text(
+        "Zero swing wins", "",
+    )
+    _check(
+        "21. validate_creative_hook_text — substring overlap with caption_hook "
+        "fails in both directions; distinct phrasing passes",
+        (not ok_identical) and "overlap" in reason_id.lower()
+        and (not ok_sub_a) and "overlap" in reason_a.lower()
+        and (not ok_sub_b) and "overlap" in reason_b.lower()
+        and ok_distinct and ok_empty_caption,
+        f"identical={ok_identical}, sub_a={ok_sub_a}, sub_b={ok_sub_b}, "
+        f"distinct={ok_distinct}, empty_caption={ok_empty_caption}",
+    )
+
+
+def test_validate_llm_output_requires_creative_hook_text() -> None:
+    """validate_llm_output flags missing/invalid creative_hook_text as a
+    validation issue."""
+    base = {
+        "caption_hook": "Open with the angle here.",
+        "caption_body": "Body content line one.\n\nLine two.",
+        "cta_text": "",
+        "image_overlay_hook": "",
+        "first_comment": "",
+        "draft_rationale": "rationale",
+    }
+
+    # Missing creative_hook_text.
+    parsed_missing = dict(base)
+    issues_missing, _ = drafter.validate_llm_output(
+        parsed_missing, "FALSE", "facebook", "brand_awareness",
+        "save", "image2_enhanced",
+    )
+    has_missing_issue = any("creative_hook_text" in i.lower() for i in issues_missing)
+
+    # Valid creative_hook_text passes the creative-hook check.
+    parsed_ok = dict(base, creative_hook_text="Zero swing wins")
+    issues_ok, _ = drafter.validate_llm_output(
+        parsed_ok, "FALSE", "facebook", "brand_awareness",
+        "save", "image2_enhanced",
+    )
+    has_no_creative_issue = not any(
+        "creative_hook_text" in i.lower() for i in issues_ok
+    )
+
+    _check(
+        "22. validate_llm_output — flags missing creative_hook_text; clean "
+        "creative_hook_text passes",
+        has_missing_issue and has_no_creative_issue,
+        f"missing_issues={issues_missing}, ok_issues={issues_ok}",
+    )
+
+
+def test_build_drafter_messages_describes_creative_hook_text() -> None:
+    """Verify the LLM prompt instructs the model to produce a distinct,
+    ≤7-word creative_hook_text and includes it in the output schema."""
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_CTA_TYPE: "save",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_video",
+        drafter.CQ_ANGLE: "Show the machine on a tight residential lot.",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+    _, user_msg = drafter.build_drafter_messages(
+        row=row,
+        catalog_item=None,
+        config=config,
+        brand_voice="(brand voice text)",
+        hook_skill="(hook skill text)",
+        cta_skill="(cta skill text)",
+        platform_style="(platform style text)",
+        few_shot_library="(few shot library text)",
+        strategy_guidance="(strategy guidance text)",
+    )
+
+    lower = user_msg.lower()
+    _check(
+        "23. build_drafter_messages — describes creative_hook_text "
+        "(distinct, ≤7 words) and includes it in the output schema",
+        "creative_hook_text" in user_msg
+        and "distinct" in lower
+        and "7" in user_msg,
+        f"contains_field={'creative_hook_text' in user_msg}, "
+        f"says_distinct={'distinct' in lower}, has_7={'7' in user_msg}",
+    )
+
+
+def test_generate_media_creatomate_text_overlay_uses_creative_hook_text() -> None:
+    """Hook-Text on a creatomate_text_overlay render must be populated from
+    creative_hook_text, NOT from image_overlay_hook or the caption hook."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["template_id"] = template_id
+        captured["modifications"] = modifications
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "ok", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "equipment_post_image": {
+                "templates": {
+                    "diagonal_slash": {"id": "tpl-diagonal-slash"},
+                },
+            },
+        },
+    })
+    row = {
+        drafter.CQ_ROW_ID: "TEST-CH-01",
+        drafter.CQ_PLATFORM: "instagram",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_text_overlay",
+        drafter.CQ_TEXT_OVERLAY: "TRUE",
+        drafter.CQ_ANGLE: "Tight lot reach",
+    }
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter.generate_media(
+            row=row,
+            image_id="drive-image-id",
+            overlay_hook="Old overlay hook text",
+            caption_hook="Caption hook line that opens the post.",
+            image_prompt_universal="",
+            image_prompt_social="",
+            config=config,
+            drive_service=None,
+            review_data=None,
+            creative_hook_text="Zero swing wins",
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    hook_text_value = mods.get("Hook-Text", {}).get("text", "")
+    _check(
+        "24. generate_media (creatomate_text_overlay) — Hook-Text is "
+        "creative_hook_text, not the caption hook or image_overlay_hook",
+        result.get("success") is True
+        and hook_text_value == "Zero swing wins"
+        and "Caption hook" not in hook_text_value
+        and "Old overlay hook" not in hook_text_value,
+        f"hook_text_value={hook_text_value!r}, result={result!r}",
+    )
+
+
+def test_generate_media_creatomate_video_uses_creative_hook_text() -> None:
+    """Same contract on creatomate_video: Hook-Text comes from
+    creative_hook_text, not _derive_video_hook on the caption hook."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["template_id"] = template_id
+        captured["modifications"] = modifications
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "ok", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "equipment_post_video": {
+                "templates": {
+                    "slow_push": {"id": "tpl-slow-push"},
+                },
+            },
+        },
+    })
+    row = {
+        drafter.CQ_ROW_ID: "TEST-CH-02",
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_video",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_ANGLE: "Show the back-fence clearance",
+    }
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter.generate_media(
+            row=row,
+            image_id="drive-image-id",
+            overlay_hook="",
+            caption_hook=(
+                "Tight residential lot? Zero tail swing changes the game."
+            ),
+            image_prompt_universal="",
+            image_prompt_social="",
+            config=config,
+            drive_service=None,
+            review_data=None,
+            creative_hook_text="Back fence stays intact",
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    hook_text_value = mods.get("Hook-Text", {}).get("text", "")
+    _check(
+        "25. generate_media (creatomate_video) — Hook-Text uses "
+        "creative_hook_text, not _derive_video_hook on caption_hook",
+        result.get("success") is True
+        and hook_text_value == "Back fence stays intact"
+        # Make sure we didn't fall through to the derived hook from caption_hook.
+        and "Tight residential lot" not in hook_text_value,
+        f"hook_text_value={hook_text_value!r}, result={result!r}",
+    )
+
+
 def test_build_drafter_messages_includes_review_block() -> None:
     """When review_data is provided, the user message carries a Social Proof
     review block with reviewer name and full review text. When omitted, the
@@ -909,6 +1175,12 @@ def run_tests(run_live: bool) -> int:
     test_update_review_usage_writes_correct_cells()
     test_update_review_usage_missing_review()
     test_build_drafter_messages_includes_review_block()
+    test_creative_hook_text_validation_max_words()
+    test_creative_hook_text_validation_distinct_from_caption()
+    test_validate_llm_output_requires_creative_hook_text()
+    test_build_drafter_messages_describes_creative_hook_text()
+    test_generate_media_creatomate_text_overlay_uses_creative_hook_text()
+    test_generate_media_creatomate_video_uses_creative_hook_text()
 
     if run_live:
         print()

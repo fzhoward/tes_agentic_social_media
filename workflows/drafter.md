@@ -36,7 +36,7 @@ The Drafter takes a single planned Content Queue row and produces the finished d
 
 | Output | Destination | Description |
 |--------|-------------|-------------|
-| Updated Content Queue row | Google Sheets | Caption, first_comment, cta_text, media_url, hook_text, image_overlay_text, draft_rationale, media_format_used. Status updated to `drafted`. |
+| Updated Content Queue row | Google Sheets | Caption, creative_hook_text, first_comment, cta_text, media_url, hook_text, image_overlay_text, draft_rationale, media_format_used. Status updated to `drafted`. |
 | Generated media asset | Google Drive (`drive.generated_images_folder_id`) | The finished image or video file |
 
 ## Processing Steps
@@ -53,8 +53,17 @@ Invoke the Hook Creation Skill to produce scored hooks for:
 
 - **Caption hook** — the opening line of the post caption
 - **Image overlay hook** — the text to overlay on the image (only when `text_overlay = true`)
+- **Creative hook text** — a distinct ≤7-word hook used as the `Hook-Text` modification value on Creatomate equipment-post templates (`equipment_post_image`, `equipment_post_video`)
 
 The Hook Creation Skill returns multiple candidates per channel with scores and a `recommended: true` flag. The Drafter uses the recommended hook. If no hook passes the minimum quality threshold, the Drafter uses the highest-scoring candidate and flags it in `draft_rationale`.
+
+**`creative_hook_text` rules:**
+- Generated using the same Hook Creation Skill that produces the caption hook
+- Maximum 7 words — hard limit enforced in post-processing
+- A **distinct** hook, not a truncation or substring of `caption_hook` (substring check runs in both directions)
+- Optimized for bold typography on a still or motion creative — punchy, declarative, no trailing punctuation except `?`
+- Always populated, regardless of `text_overlay` or `media_format` — the field is written to the Content Queue for every drafted row
+- Injected as the `Hook-Text` modification value when rendering `creatomate_text_overlay` or `creatomate_video` (replacing the older behavior of truncating the caption hook). Other media formats write the value to the queue but do not consume it for image rendering.
 
 ### 3. Write Caption
 
@@ -124,7 +133,7 @@ Based on the assigned `media_format`, execute the appropriate pipeline:
 2. Upload/host the source photo at a URL accessible to Creatomate (or use Drive direct link if supported)
 3. Call the Creatomate API `POST /v1/renders` with:
    - The text overlay template ID (from business config or system config)
-   - Dynamic field values: source image URL, hook text, any brand-specific values (colors, fonts)
+   - Dynamic field values: source image URL (`Equipment-Photo`), `Hook-Text` ← `creative_hook_text`, any brand-specific values (colors, fonts)
 4. Poll for render completion or receive webhook callback
 5. Download the rendered output
 6. The code pipeline handles: logo overlay, format conversion
@@ -134,7 +143,7 @@ Based on the assigned `media_format`, execute the appropriate pipeline:
 2. Upload/host the source photo at a URL accessible to Creatomate
 3. Call the Creatomate API `POST /v1/renders` with:
    - The video template ID (from business config or system config)
-   - Dynamic field values: source image URL, any motion parameters
+   - Dynamic field values: source image URL (`Equipment-Photo`), `Hook-Text` ← `creative_hook_text`, any motion parameters
 4. Poll for render completion
 5. Download the rendered video
 6. The code pipeline handles: logo overlay (if applicable to video), format conversion
@@ -169,6 +178,7 @@ Write a 1-2 sentence note explaining the draft for the Critic and owner:
 
 Write all outputs to the Content Queue row:
 - `caption`: Full caption (hook + body + CTA)
+- `creative_hook_text`: The distinct ≤7-word hook used as Creatomate Hook-Text on equipment templates (always populated, even when the rendered media format does not consume it)
 - `first_comment`: Blog URL with prefix (link posts only, empty otherwise)
 - `cta_text`: The CTA line as a standalone field (for the Critic to evaluate independently)
 - `hook_text`: The caption hook used

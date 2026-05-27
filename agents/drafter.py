@@ -178,6 +178,7 @@ CQ_REVIEW_ID = "review_id"
 
 # Drafter-written.
 CQ_CAPTION = "caption"
+CQ_CREATIVE_HOOK_TEXT = "creative_hook_text"
 CQ_FIRST_COMMENT = "first_comment"
 CQ_CTA_TEXT = "cta_text"
 CQ_HOOK_TEXT = "hook_text"
@@ -186,6 +187,19 @@ CQ_MEDIA_URL = "media_url"
 CQ_MEDIA_FORMAT_USED = "media_format_used"
 CQ_DRAFT_RATIONALE = "draft_rationale"
 CQ_REVISION_ROUND = "revision_round"
+
+
+# Media formats that render a Creatomate equipment template whose Hook-Text
+# field should be populated from creative_hook_text.
+CREATOMATE_EQUIPMENT_FORMATS: set[str] = {
+    "creatomate_text_overlay",
+    "creatomate_video",
+}
+
+# Max words allowed in creative_hook_text — hard limit, enforced in
+# post-processing per Session 15 spec. Bold typography on visual creatives
+# falls apart past this length.
+CREATIVE_HOOK_MAX_WORDS: int = 7
 
 
 # --- Catalog column names ---
@@ -340,6 +354,37 @@ def validate_overlay_hook(
     return False, f"text_overlay flag must be TRUE or FALSE, got {flag!r}"
 
 
+def validate_creative_hook_text(
+    creative_hook: str,
+    caption_hook: str,
+) -> tuple[bool, str]:
+    """Return (ok, reason) for the creative_hook_text field.
+
+    Rules:
+      - Non-empty.
+      - At most 7 words.
+      - Distinct from caption_hook: neither string is a case-insensitive
+        substring of the other. Same-text counts as overlap.
+    """
+    h = (creative_hook or "").strip()
+    if not h:
+        return False, "creative_hook_text is empty"
+    n = count_words(h)
+    if n > CREATIVE_HOOK_MAX_WORDS:
+        return False, (
+            f"creative_hook_text has {n} words "
+            f"(must be ≤{CREATIVE_HOOK_MAX_WORDS})"
+        )
+    ch = (caption_hook or "").strip().lower()
+    lh = h.lower()
+    if ch and (lh in ch or ch in lh):
+        return False, (
+            "creative_hook_text overlaps with caption_hook — it must be a "
+            "distinct hook, not a substring of caption_hook (or vice versa)"
+        )
+    return True, ""
+
+
 def validate_caption_length(caption: str, platform: str) -> tuple[bool, str]:
     """Return (ok, reason) for caption length vs platform limit."""
     platform_key = (platform or "").strip().lower()
@@ -388,11 +433,16 @@ def validate_llm_output(
     body = str(parsed.get("caption_body", "") or "").strip()
     cta_text = str(parsed.get("cta_text", "") or "").strip()
     overlay = str(parsed.get("image_overlay_hook", "") or "").strip()
+    creative_hook = str(parsed.get("creative_hook_text", "") or "").strip()
 
     if not hook:
         issues.append("caption_hook is empty")
     if not body:
         issues.append("caption_body is empty")
+
+    ok_creative, reason_creative = validate_creative_hook_text(creative_hook, hook)
+    if not ok_creative:
+        issues.append(reason_creative)
 
     cta_required = (
         str(objective).strip().lower() == "lead_generation"
@@ -415,6 +465,7 @@ def validate_llm_output(
         ("caption_body", body),
         ("cta_text", cta_text),
         ("image_overlay_hook", overlay),
+        ("creative_hook_text", creative_hook),
     ):
         bad = contains_banned_language(value)
         if bad:
@@ -818,6 +869,7 @@ def build_drafter_messages(
   "caption_body": "The body of the caption. Each content line separated by \\n\\n for vertical stack formatting. Does NOT include the hook or CTA.",
   "cta_text": "The CTA line — last element of the caption. Empty string if cta_type is none.",
   "image_overlay_hook": "3-7 word text for image overlay. Empty string if text_overlay is FALSE.",
+  "creative_hook_text": "1-7 word bold typographic hook for the Creatomate Hook-Text field. Punchy, declarative. Distinct hook — not a substring of caption_hook or image_overlay_hook. No trailing punctuation except '?'.",
   "first_comment": "URL with short prefix for link posts. Empty string if not a link post.",
   "draft_rationale": "1-2 sentence note on the angle taken and any quality concerns."
 }"""
@@ -876,6 +928,22 @@ Link behavior: {'in-caption button (GBP)' if platform == 'gbp' else 'first comme
 
 {hook_section}
 
+# Creative Hook Text Direction
+
+The `creative_hook_text` field is a SEPARATE hook used as the Hook-Text overlay
+on Creatomate equipment-post templates. It is NOT a truncation, copy, or
+substring of `caption_hook` or `image_overlay_hook`. Generate it with the same
+hook creation skill above, but optimize for bold typography on a still or
+video creative:
+
+- Hard limit: 1-7 words (≤7 is non-negotiable).
+- Punchy and declarative. Read it as a headline, not a sentence opener.
+- No trailing periods, commas, semicolons, or colons. A trailing `?` is allowed.
+- Concrete, specific, and easy to read at a glance.
+- Must be a DISTINCT hook from caption_hook: neither string should be a
+  substring of the other. If your first draft of `creative_hook_text` repeats
+  any portion of `caption_hook`, rewrite it from a different angle.
+
 # Few-Shot Examples (selected for content_type={content_type!r}, objective={objective!r})
 
 {few_shots}
@@ -893,6 +961,7 @@ Return exactly this JSON shape (no markdown fences, no commentary):
 - No markdown. No emoji. No exclamation points. No em dashes (use commas, periods, or line breaks instead).
 - Vertical stack formatting in `caption_body`: every content line followed by a blank line (\\n\\n).
 - `image_overlay_hook` is 3-7 words max. Required when text_overlay is {text_overlay}; {'must be populated' if overlay_needed else 'must be empty string'}.
+- `creative_hook_text` is 1-7 words max and is ALWAYS populated. It must be distinct from `caption_hook` (no substring overlap in either direction) and must not end with `.`, `,`, `;`, or `:` (a trailing `?` is fine).
 - `first_comment` is populated {'(link post — include the URL ' + link_target + ' with a short lead-in prefix)' if is_link_post else '(empty string — this is not a link post)'}.
 - The phone number for call CTAs is: {phone}
 - Never include pricing language (per pricing policy).
@@ -1305,6 +1374,7 @@ def generate_media(
     config: Config,
     drive_service: Any,
     review_data: dict | None = None,
+    creative_hook_text: str = "",
 ) -> dict:
     """Generate the media asset for `row`. Returns a result dict.
 
@@ -1385,11 +1455,14 @@ def generate_media(
             if not tid:
                 fallback_chain.append((fmt, "no video templates configured"))
                 continue
-            # Video templates have a built-in text track that needs
-            # Hook-Text populated regardless of the image-overlay flag.
-            # Use overlay_hook when present (text_overlay=TRUE), otherwise
-            # derive a short hook from caption_hook/angle.
-            video_hook = (overlay_hook or "").strip()
+            # Hook-Text on Creatomate equipment templates is populated from
+            # creative_hook_text — a distinct ≤7-word hook generated alongside
+            # the caption. Fall back to overlay_hook and then to a derived
+            # video hook only when creative_hook_text is missing (legacy or
+            # validation-skipped paths).
+            video_hook = (creative_hook_text or "").strip()
+            if not video_hook:
+                video_hook = (overlay_hook or "").strip()
             if not video_hook:
                 video_hook = _derive_video_hook(
                     caption_hook=caption_hook,
@@ -1426,9 +1499,15 @@ def generate_media(
             if not tid:
                 fallback_chain.append((fmt, "no image templates configured"))
                 continue
+            # Prefer creative_hook_text (distinct ≤7-word hook designed for
+            # bold typography) over overlay_hook (which mirrors image2 in-image
+            # text) for the Hook-Text element.
+            hook_text_value = (
+                (creative_hook_text or "").strip() or (overlay_hook or "")
+            )
             mods = creatomate_helpers.build_modifications(
                 image_fields={"Equipment-Photo": source_image_url},
-                text_fields={"Hook-Text": overlay_hook or ""},
+                text_fields={"Hook-Text": hook_text_value},
             )
             output_path = os.path.join(TMP_DIR, f"{row_id}_rendered.png")
             res = creatomate_helpers.render_template(tid, mods, output_path)
@@ -1818,6 +1897,9 @@ def draft_single_row(
     parsed["image_overlay_hook"] = clean_overlay_text(
         str(parsed.get("image_overlay_hook", ""))
     )
+    parsed["creative_hook_text"] = clean_overlay_text(
+        str(parsed.get("creative_hook_text", ""))
+    )
 
     issues, full_caption = validate_llm_output(
         parsed=parsed,
@@ -1841,6 +1923,7 @@ def draft_single_row(
     caption_body = str(parsed.get("caption_body", "")).strip()
     cta_text = str(parsed.get("cta_text", "")).strip()
     overlay_hook = str(parsed.get("image_overlay_hook", "")).strip()
+    creative_hook_text_val = str(parsed.get("creative_hook_text", "")).strip()
     first_comment = str(parsed.get("first_comment", "")).strip()
     draft_rationale = str(parsed.get("draft_rationale", "")).strip()
 
@@ -1855,6 +1938,7 @@ def draft_single_row(
         config=config,
         drive_service=context["drive_service"],
         review_data=review_data,
+        creative_hook_text=creative_hook_text_val,
     )
 
     media_generated = bool(media_result.get("success"))
@@ -1891,6 +1975,7 @@ def draft_single_row(
         updates: dict[str, str] = {
             CQ_STATUS: "drafted",
             CQ_CAPTION: full_caption,
+            CQ_CREATIVE_HOOK_TEXT: creative_hook_text_val,
             CQ_FIRST_COMMENT: first_comment,
             CQ_CTA_TEXT: cta_text,
             CQ_HOOK_TEXT: caption_hook,
@@ -1975,6 +2060,7 @@ def draft_single_row(
         "fallback_used": fallback_used,
         "fallback_chain": fallback_chain,
         "caption": full_caption,
+        "creative_hook_text": creative_hook_text_val,
         "first_comment": first_comment,
         "draft_rationale": draft_rationale,
         "dry_run": dry_run,
