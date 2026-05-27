@@ -45,6 +45,8 @@ The Drafter takes a single planned Content Queue row and produces the finished d
 
 Read all inputs: the Content Queue row, the catalog item record (if applicable), the brand voice file, and all relevant skill files. If this is a revision round, also load the Critic's fix instructions.
 
+For Social Proof posts (`content_type = Social Proof / Customer Story`), the Strategist has set `review_id` on the Content Queue row. Read the Reviews Sheet (`catalog.reviews_sheet_id`) once at the start of the run and look up the matching row by `review_id`. Extract `reviewer_first_name`, `star_rating`, `review_text`, and `excerpt_long`. If the review isn't found, log a warning and continue — the caption can still draft from the angle, but media generation will skip.
+
 ### 2. Generate Hooks
 
 Invoke the Hook Creation Skill to produce scored hooks for:
@@ -56,7 +58,9 @@ The Hook Creation Skill returns multiple candidates per channel with scores and 
 
 ### 3. Write Caption
 
-Write the caption body following the brand voice rules, content type definition, and post objective rules:
+Write the caption body following the brand voice rules, content type definition, and post objective rules.
+
+**Social Proof posts:** when `review_id` is set and the review was loaded in step 1, the LLM prompt includes the full `review_text` and `reviewer_first_name`. The caption should reference the review naturally — quote, paraphrase, or frame it — and use the reviewer's first name. The caption must not fabricate content beyond what the review actually says.
 
 **Caption structure:**
 ```
@@ -135,6 +139,25 @@ Based on the assigned `media_format`, execute the appropriate pipeline:
 5. Download the rendered video
 6. The code pipeline handles: logo overlay (if applicable to video), format conversion
 
+#### `creatomate_review_image` (static review card from a Reviews Sheet row)
+1. Pick a template from `creatomate.review_image.templates` (deterministic rotation by `row_id`)
+2. Build modifications:
+   - `Review-Text` → `excerpt_long` (the 80-character excerpt from the Reviews Sheet)
+   - `Reviewer-Name` → `reviewer_first_name`
+   - `Star-Rating` → `"★★★★★"` (Reviews Sheet only marks 5-star reviews usable)
+   - `Equipment-Photo` → set ONLY when the selected template's `extra_dynamic_fields` includes `Equipment-Photo` AND a source image URL is available (currently `photo_testimonial` only)
+3. Call Creatomate, poll for completion, download as PNG
+4. No fallback chain — review image doesn't need a source photo, so there's no equipment-format to fall back to
+
+#### `creatomate_review_video` (motion review card from a Reviews Sheet row)
+1. Pick a template from `creatomate.review_video.templates`
+2. Build modifications:
+   - `Review-Text` → `excerpt_long`
+   - `Reviewer-Name` → `reviewer_first_name`
+   - `Equipment-Photo` → set ONLY when the template's `extra_dynamic_fields` includes `Equipment-Photo` AND a source image URL is available (currently `photo_reveal` only)
+3. Call Creatomate, poll for completion, download as MP4
+4. **Fallback:** if the video render fails, fall back to `creatomate_review_image` using the same review data
+
 ### 7. Write Draft Rationale
 
 Write a 1-2 sentence note explaining the draft for the Critic and owner:
@@ -154,6 +177,14 @@ Write all outputs to the Content Queue row:
 - `media_format_used`: The actual media format used (should match the assignment unless fallback occurred)
 - `draft_rationale`: The rationale note
 - `status`: Update to `drafted`
+
+### 9. Update Review Usage (Social Proof Posts Only)
+
+After media generation succeeds for a Social Proof post, find the matching `review_id` in the Reviews Sheet and update two cells:
+- Increment `times_used` by 1
+- Set `last_used_date` to today's ISO date
+
+This feeds the Strategist's rotation logic (prefer unused reviews, then oldest used). Failures here log a warning but do not abort the draft — the main caption/media write has already succeeded.
 
 ## Revision Handling
 
@@ -211,8 +242,11 @@ If the Drafter fails on a single row, that row stays at `status = planned` and M
 | `apis.video_provider` | Creatomate |
 | `drive.generated_images_folder_id` | Where to save generated assets |
 | `strategy.pricing_in_posts` | Pricing policy |
+| `catalog.reviews_sheet_id` | Reviews Sheet read by Social Proof posts to source review text + reviewer name |
+| `creatomate.review_image.templates` | Static review-card templates (Bold Quote Card, Photo Testimonial, etc.) |
+| `creatomate.review_video.templates` | Motion review-card templates (Star Cascade, Photo Reveal, etc.) |
 
 ---
 
 *Drafter Agent — Workflow SOP v1*
-*Last updated: 2026-05-20*
+*Last updated: 2026-05-27*

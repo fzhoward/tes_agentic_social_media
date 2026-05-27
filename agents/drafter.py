@@ -136,6 +136,27 @@ BANNED_CHARS: tuple[str, ...] = ("!", "—")
 # needs Hook-Text populated regardless of the image-overlay flag.
 VIDEO_MEDIA_FORMATS: set[str] = {"creatomate_video", "creatomate_review_video"}
 
+# Media formats rendered from a Reviews-Sheet row rather than an equipment photo.
+REVIEW_MEDIA_FORMATS: set[str] = {"creatomate_review_image", "creatomate_review_video"}
+
+# Content type that pairs with review media formats.
+SOCIAL_PROOF_CONTENT_TYPE: str = "Social Proof / Customer Story"
+
+
+# --- Reviews Sheet column names ---
+
+REV_REVIEW_ID = "review_id"
+REV_REVIEWER_FIRST_NAME = "reviewer_first_name"
+REV_STAR_RATING = "star_rating"
+REV_REVIEW_TEXT = "review_text"
+REV_EXCERPT_LONG = "excerpt_long"
+REV_LAST_USED_DATE = "last_used_date"
+REV_TIMES_USED = "times_used"
+
+# Glyph passed to the review-image template's Star-Rating element. The Reviews
+# Sheet filter only marks 5-star reviews usable, so this is a constant.
+REVIEW_STAR_RATING_GLYPH: str = "★★★★★"
+
 
 # --- Content Queue column names (per PLACEHOLDER_REGISTRY.md) ---
 
@@ -153,6 +174,7 @@ CQ_MEDIA_FORMAT = "media_format"
 CQ_TEXT_OVERLAY = "text_overlay"
 CQ_SOURCE_IMAGE = "source_image_id"
 CQ_DRAFT_NOTES = "draft_notes"
+CQ_REVIEW_ID = "review_id"
 
 # Drafter-written.
 CQ_CAPTION = "caption"
@@ -664,6 +686,7 @@ def build_drafter_messages(
     few_shot_library: str,
     strategy_guidance: str,
     retry_nudge: bool = False,
+    review_data: dict | None = None,
 ) -> tuple[str, str]:
     """Build (system_message, user_message) for the Anthropic call."""
     platform = str(row.get(CQ_PLATFORM, "")).strip().lower()
@@ -737,6 +760,23 @@ def build_drafter_messages(
     is_link_post = cta_type == "click"
     overlay_needed = text_overlay == "TRUE"
 
+    if review_data:
+        review_block = (
+            "# Review Featured in This Post\n\n"
+            "This is a Social Proof post featuring a real customer review. The "
+            "caption should reference this review naturally — you may quote it, "
+            "paraphrase it, or frame it. Use the reviewer's first name. Do not "
+            "fabricate additional review content beyond what is provided. The "
+            "review_id is a system reference, not for the caption.\n\n"
+            f"Reviewer first name: {review_data.get(REV_REVIEWER_FIRST_NAME, '')}\n"
+            f"Star rating: {review_data.get(REV_STAR_RATING, '')}\n"
+            f"Full review text:\n\"\"\"\n"
+            f"{review_data.get(REV_REVIEW_TEXT, '')}\n"
+            f"\"\"\"\n"
+        )
+    else:
+        review_block = ""
+
     system_message = (
         "You are a social media copywriter for a local equipment rental "
         "company. You write short, punchy, platform-native captions that "
@@ -800,7 +840,7 @@ draft_notes: {draft_notes or '(none)'}
 
 {equipment_block}
 
-# Brand Voice (full)
+{review_block}# Brand Voice (full)
 
 {brand_voice}
 
@@ -904,6 +944,7 @@ def get_llm_draft(
     catalog_item: dict | None,
     config: Config,
     skills: dict[str, str],
+    review_data: dict | None = None,
 ) -> dict:
     """Call the LLM with one JSON-only retry. Returns the parsed dict."""
     system_msg, user_msg = build_drafter_messages(
@@ -916,6 +957,7 @@ def get_llm_draft(
         platform_style=skills["platform_style"],
         few_shot_library=skills["few_shot_library"],
         strategy_guidance=skills["strategy_guidance"],
+        review_data=review_data,
     )
 
     last_exc: Exception | None = None
@@ -945,6 +987,7 @@ def get_llm_draft(
                     few_shot_library=skills["few_shot_library"],
                     strategy_guidance=skills["strategy_guidance"],
                     retry_nudge=True,
+                    review_data=review_data,
                 )
                 continue
             raise
@@ -1016,6 +1059,206 @@ def _source_image_url(image_id: str) -> str:
     return f"https://drive.google.com/uc?id={image_id}&export=download"
 
 
+def _select_review_template(
+    templates: dict | None,
+    row_id: str,
+) -> tuple[str, str, list[str]]:
+    """Return (template_key, template_id, extra_dynamic_fields) for a review template.
+
+    Wraps select_template so callers can also inspect ``extra_dynamic_fields``
+    (used to decide whether to populate ``Equipment-Photo``).
+    """
+    key, tid = select_template(templates, row_id)
+    extra: list[str] = []
+    if isinstance(templates, dict):
+        template = templates.get(key, {})
+        if isinstance(template, dict):
+            raw = template.get("extra_dynamic_fields", []) or []
+            if isinstance(raw, list):
+                extra = [str(f).strip() for f in raw if str(f).strip()]
+    return key, tid, extra
+
+
+def _render_review_image(
+    row_id: str,
+    review_data: dict,
+    source_image_url: str,
+    config: Config,
+) -> dict:
+    """Render a Creatomate review-image template. Returns a result dict."""
+    templates = config.get("creatomate.review_image.templates", {}) or {}
+    key, tid, extra_fields = _select_review_template(templates, row_id)
+    if not tid:
+        return {
+            "success": False,
+            "output_path": "",
+            "error": "no review_image templates configured",
+            "template_key": "",
+        }
+
+    text_fields = {
+        "Review-Text": str(review_data.get(REV_EXCERPT_LONG, "")),
+        "Reviewer-Name": str(review_data.get(REV_REVIEWER_FIRST_NAME, "")),
+        "Star-Rating": REVIEW_STAR_RATING_GLYPH,
+    }
+    image_fields: dict[str, str] = {}
+    if source_image_url and "Equipment-Photo" in extra_fields:
+        image_fields["Equipment-Photo"] = source_image_url
+
+    mods = creatomate_helpers.build_modifications(
+        image_fields=image_fields,
+        text_fields=text_fields,
+    )
+    output_path = os.path.join(TMP_DIR, f"{row_id}_review.png")
+    res = creatomate_helpers.render_template(tid, mods, output_path)
+    return {
+        "success": bool(res.get("success")),
+        "output_path": res.get("output_path", ""),
+        "error": res.get("error", ""),
+        "template_key": key,
+    }
+
+
+def _render_review_video(
+    row_id: str,
+    review_data: dict,
+    source_image_url: str,
+    config: Config,
+) -> dict:
+    """Render a Creatomate review-video template. Returns a result dict."""
+    templates = config.get("creatomate.review_video.templates", {}) or {}
+    key, tid, extra_fields = _select_review_template(templates, row_id)
+    if not tid:
+        return {
+            "success": False,
+            "output_path": "",
+            "error": "no review_video templates configured",
+            "template_key": "",
+        }
+
+    text_fields = {
+        "Review-Text": str(review_data.get(REV_EXCERPT_LONG, "")),
+        "Reviewer-Name": str(review_data.get(REV_REVIEWER_FIRST_NAME, "")),
+    }
+    image_fields: dict[str, str] = {}
+    if source_image_url and "Equipment-Photo" in extra_fields:
+        image_fields["Equipment-Photo"] = source_image_url
+
+    mods = creatomate_helpers.build_modifications(
+        image_fields=image_fields,
+        text_fields=text_fields,
+    )
+    output_path = os.path.join(TMP_DIR, f"{row_id}_review.mp4")
+    res = creatomate_helpers.render_template(tid, mods, output_path)
+    return {
+        "success": bool(res.get("success")),
+        "output_path": res.get("output_path", ""),
+        "error": res.get("error", ""),
+        "template_key": key,
+    }
+
+
+def _generate_review_media(
+    row: dict,
+    media_format: str,
+    review_data: dict | None,
+    image_id: str,
+    config: Config,
+) -> dict:
+    """Render a review media asset. Same return shape as generate_media."""
+    row_id = str(row.get(CQ_ROW_ID, "")).strip() or "unknown"
+
+    if not review_data:
+        return {
+            "success": False,
+            "output_path": "",
+            "media_format_used": "",
+            "fallback_chain": [(media_format, "no review data available")],
+            "error": "no review data available",
+            "template_key": "",
+        }
+
+    source_image_url = _source_image_url(image_id) if image_id else ""
+    chain: list[tuple[str, str]] = []
+
+    if media_format == "creatomate_review_image":
+        res = _render_review_image(row_id, review_data, source_image_url, config)
+        if res.get("success"):
+            return {
+                "success": True,
+                "output_path": res["output_path"],
+                "media_format_used": "creatomate_review_image",
+                "fallback_chain": chain,
+                "error": "",
+                "template_key": res.get("template_key", ""),
+            }
+        chain.append(("creatomate_review_image", res.get("error", "render failed")))
+        return {
+            "success": False,
+            "output_path": "",
+            "media_format_used": "",
+            "fallback_chain": chain,
+            "error": res.get("error", "render failed"),
+            "template_key": "",
+        }
+
+    if media_format == "creatomate_review_video":
+        video_res = _render_review_video(
+            row_id, review_data, source_image_url, config,
+        )
+        if video_res.get("success"):
+            return {
+                "success": True,
+                "output_path": video_res["output_path"],
+                "media_format_used": "creatomate_review_video",
+                "fallback_chain": chain,
+                "error": "",
+                "template_key": video_res.get("template_key", ""),
+            }
+        chain.append((
+            "creatomate_review_video",
+            video_res.get("error", "render failed"),
+        ))
+        print(
+            f"[drafter] {row_id}: creatomate_review_video failed "
+            f"({video_res.get('error')}) — falling back to creatomate_review_image",
+            file=sys.stderr,
+        )
+        image_res = _render_review_image(
+            row_id, review_data, source_image_url, config,
+        )
+        if image_res.get("success"):
+            return {
+                "success": True,
+                "output_path": image_res["output_path"],
+                "media_format_used": "creatomate_review_image",
+                "fallback_chain": chain,
+                "error": "",
+                "template_key": image_res.get("template_key", ""),
+            }
+        chain.append((
+            "creatomate_review_image",
+            image_res.get("error", "render failed"),
+        ))
+        return {
+            "success": False,
+            "output_path": "",
+            "media_format_used": "",
+            "fallback_chain": chain,
+            "error": "all review media generation attempts failed",
+            "template_key": "",
+        }
+
+    return {
+        "success": False,
+        "output_path": "",
+        "media_format_used": "",
+        "fallback_chain": [(media_format, "unknown review media format")],
+        "error": f"unknown review media format: {media_format!r}",
+        "template_key": "",
+    }
+
+
 def _derive_video_hook(
     caption_hook: str,
     angle: str,
@@ -1061,6 +1304,7 @@ def generate_media(
     image_prompt_social: str,
     config: Config,
     drive_service: Any,
+    review_data: dict | None = None,
 ) -> dict:
     """Generate the media asset for `row`. Returns a result dict.
 
@@ -1077,6 +1321,18 @@ def generate_media(
     platform = str(row.get(CQ_PLATFORM, "")).strip().lower()
     media_format = str(row.get(CQ_MEDIA_FORMAT, "")).strip()
     text_overlay = str(row.get(CQ_TEXT_OVERLAY, "")).strip().upper() == "TRUE"
+
+    # Review media has its own pipeline — driven by Reviews Sheet data, not an
+    # equipment photo. Source image is optional (only photo_testimonial and
+    # photo_reveal templates use it).
+    if media_format in REVIEW_MEDIA_FORMATS:
+        return _generate_review_media(
+            row=row,
+            media_format=media_format,
+            review_data=review_data,
+            image_id=image_id,
+            config=config,
+        )
 
     fallback_chain: list[tuple[str, str]] = []
 
@@ -1278,6 +1534,73 @@ def upload_media_to_drive(
         return ""
 
 
+def update_review_usage(
+    review_id: str,
+    reviews_sheet_id: str,
+    reviews_tab: str,
+    service: Any,
+    now: datetime | None = None,
+) -> bool:
+    """Increment times_used and set last_used_date on the matching review row.
+
+    Called after a Social Proof post's media is successfully generated, so the
+    Strategist's rotation logic (prefer unused reviews, then oldest-used) sees
+    the row as recently used. Failures are logged and return False — they do
+    not abort the Drafter's main flow.
+    """
+    if not (review_id or "").strip() or not reviews_sheet_id or not reviews_tab:
+        return False
+
+    try:
+        matches = sheets_helpers.find_rows_by_column_value(
+            reviews_sheet_id, reviews_tab, REV_REVIEW_ID, review_id,
+            service=service,
+        )
+    except Exception as exc:
+        print(
+            f"[drafter] WARN: could not look up review {review_id!r} for "
+            f"usage update: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+    if not matches:
+        print(
+            f"[drafter] WARN: review {review_id!r} not in Reviews Sheet — "
+            f"skipping usage update",
+            file=sys.stderr,
+        )
+        return False
+
+    row_number, row_data = matches[0]
+    try:
+        current_count = int(str(row_data.get(REV_TIMES_USED, "0") or "0").strip())
+    except (TypeError, ValueError):
+        current_count = 0
+    new_count = current_count + 1
+    today = (now or _now_et()).astimezone(ET).date().isoformat()
+
+    try:
+        sheets_helpers.update_cells(
+            spreadsheet_id=reviews_sheet_id,
+            tab_name=reviews_tab,
+            row_number=row_number,
+            col_updates={
+                REV_TIMES_USED: str(new_count),
+                REV_LAST_USED_DATE: today,
+            },
+            service=service,
+        )
+        return True
+    except Exception as exc:
+        print(
+            f"[drafter] WARN: could not write review usage for "
+            f"{review_id!r}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+
 # --- Per-row processing ---
 
 def _skill_safe(name: str, config: Config, default: str = "") -> str:
@@ -1299,6 +1622,7 @@ def load_drafter_context(config: Config) -> dict[str, Any]:
 
     queue_id = config.get("drive.content_queue_sheet_id")
     catalog_id = config.get("catalog.spec_sheet_id")
+    reviews_id = config.get("catalog.reviews_sheet_id", "")
 
     queue_tab = _first_tab(sheets_service, queue_id)
     catalog_tab = _first_tab(sheets_service, catalog_id)
@@ -1309,6 +1633,24 @@ def load_drafter_context(config: Config) -> dict[str, Any]:
     catalog_rows = sheets_helpers.read_all_rows(
         catalog_id, catalog_tab, service=sheets_service,
     )
+
+    # Reviews are optional — Social Proof rows need them, but other rows
+    # don't. A missing/unreadable Reviews Sheet should not block the run.
+    reviews_tab = ""
+    reviews_rows: list[dict] = []
+    if reviews_id:
+        try:
+            reviews_tab = _first_tab(sheets_service, reviews_id)
+            reviews_rows = sheets_helpers.read_all_rows(
+                reviews_id, reviews_tab, service=sheets_service,
+            )
+        except Exception as exc:
+            print(
+                f"[drafter] WARN: could not read Reviews Sheet: "
+                f"{type(exc).__name__}: {exc} — Social Proof rows will "
+                f"skip media generation",
+                file=sys.stderr,
+            )
 
     skills = {
         "brand_voice": _skill_safe("brand_voice", config),
@@ -1328,8 +1670,11 @@ def load_drafter_context(config: Config) -> dict[str, Any]:
         "queue_tab": queue_tab,
         "catalog_id": catalog_id,
         "catalog_tab": catalog_tab,
+        "reviews_id": reviews_id,
+        "reviews_tab": reviews_tab,
         "queue_rows": queue_rows,
         "catalog_rows": catalog_rows,
+        "reviews_rows": reviews_rows,
         "skills": skills,
     }
 
@@ -1348,6 +1693,16 @@ def _find_catalog_item(catalog_rows: list[dict], item_id: str) -> dict | None:
         return None
     for r in catalog_rows:
         if str(r.get(CAT_ITEM_ID, "")).strip() == target:
+            return r
+    return None
+
+
+def _find_review_by_id(reviews_rows: list[dict], review_id: str) -> dict | None:
+    target = (review_id or "").strip()
+    if not target:
+        return None
+    for r in reviews_rows:
+        if str(r.get(REV_REVIEW_ID, "")).strip() == target:
             return r
     return None
 
@@ -1389,6 +1744,23 @@ def draft_single_row(
                 "dry_run": dry_run,
             }
 
+    # Look up review data for Social Proof rows. If review_id is set but the
+    # row isn't found, log and continue with review_data=None — the caption
+    # can still draft from the angle, but media generation will skip.
+    review_id = str(row.get(CQ_REVIEW_ID, "")).strip()
+    review_data: dict | None = None
+    if review_id:
+        review_data = _find_review_by_id(
+            context.get("reviews_rows", []), review_id,
+        )
+        if review_data is None:
+            print(
+                f"[drafter] {row_id}: review_id {review_id!r} not found in "
+                f"Reviews Sheet — media generation will skip; caption will "
+                f"draft from the angle",
+                file=sys.stderr,
+            )
+
     # --- Step 2: select source image ---
     existing_image_id = str(row.get(CQ_SOURCE_IMAGE, "")).strip()
     if existing_image_id:
@@ -1415,7 +1787,11 @@ def draft_single_row(
 
     image_id = str(image_result.get("image_id", "")).strip()
     media_format = str(row.get(CQ_MEDIA_FORMAT, "")).strip()
-    if not image_id and media_format != "":
+    if (
+        not image_id
+        and media_format != ""
+        and media_format not in REVIEW_MEDIA_FORMATS
+    ):
         print(
             f"[drafter] {row_id}: no source image available — "
             f"caption will be generated but media will be skipped",
@@ -1429,6 +1805,7 @@ def draft_single_row(
             catalog_item=catalog_item,
             config=config,
             skills=context["skills"],
+            review_data=review_data,
         )
     except Exception as exc:
         return {
@@ -1477,6 +1854,7 @@ def draft_single_row(
         image_prompt_social=context["skills"]["image_prompt_social"],
         config=config,
         drive_service=context["drive_service"],
+        review_data=review_data,
     )
 
     media_generated = bool(media_result.get("success"))
@@ -1561,9 +1939,26 @@ def draft_single_row(
                 "dry_run": dry_run,
             }
 
+    # --- Step 10: write back review usage on successful Social Proof posts ---
+    review_usage_updated = False
+    if (
+        not dry_run
+        and media_generated
+        and review_id
+        and review_data is not None
+    ):
+        review_usage_updated = update_review_usage(
+            review_id=review_id,
+            reviews_sheet_id=context.get("reviews_id", ""),
+            reviews_tab=context.get("reviews_tab", ""),
+            service=context["sheets_service"],
+        )
+
     return {
         "status": "success",
         "row_id": row_id,
+        "review_id": review_id,
+        "review_usage_updated": review_usage_updated,
         "platform": str(row.get(CQ_PLATFORM, "")),
         "content_type": str(row.get(CQ_CONTENT_TYPE, "")),
         "focus_equipment_id": focus_id,

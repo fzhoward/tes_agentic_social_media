@@ -32,8 +32,8 @@ CONFIG_FILE = PROJECT_ROOT / "business_config_tes_rentals.yaml"
 os.environ.setdefault("BUSINESS_CONFIG_PATH", str(CONFIG_FILE))
 
 from agents import drafter  # noqa: E402
-from tools import sheets_helpers  # noqa: E402
-from tools.config_loader import load_config  # noqa: E402
+from tools import creatomate_helpers, sheets_helpers  # noqa: E402
+from tools.config_loader import Config, load_config  # noqa: E402
 
 
 _FAILURES: list[tuple[str, str]] = []
@@ -321,6 +321,461 @@ def test_build_drafter_messages_anti_fabrication() -> None:
 
 
 # ----------------------------------------------------------------------
+# Review media pipeline (deterministic, mocks creatomate/sheets helpers)
+# ----------------------------------------------------------------------
+
+
+def test_find_review_by_id() -> None:
+    rows = [
+        {"review_id": "abc", "reviewer_first_name": "Carrie"},
+        {"review_id": "def", "reviewer_first_name": "Mike"},
+    ]
+    found = drafter._find_review_by_id(rows, "def")
+    missing = drafter._find_review_by_id(rows, "xyz")
+    empty = drafter._find_review_by_id(rows, "")
+    _check(
+        "10. _find_review_by_id — finds match, returns None for missing/empty",
+        found is not None
+        and found.get("reviewer_first_name") == "Mike"
+        and missing is None
+        and empty is None,
+        f"found={found!r}, missing={missing!r}, empty={empty!r}",
+    )
+
+
+def test_render_review_image_builds_modifications() -> None:
+    """_render_review_image passes Review-Text / Reviewer-Name / Star-Rating
+    and omits Equipment-Photo when the template doesn't list it."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["template_id"] = template_id
+        captured["modifications"] = modifications
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "test", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_image": {
+                "templates": {
+                    "bold_quote_card": {
+                        "id": "tpl-bold-quote-123",
+                        "name": "Bold Quote Card",
+                    },
+                },
+            },
+        },
+    })
+    review = {
+        "review_id": "rev-001",
+        "reviewer_first_name": "Carrie",
+        "excerpt_long": "Great rental, machine was clean and ready.",
+        "review_text": "Long full review text (not the excerpt — not used here).",
+    }
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter._render_review_image(
+            row_id="TEST-001",
+            review_data=review,
+            source_image_url="",
+            config=config,
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    _check(
+        "11. _render_review_image — Review-Text/Reviewer-Name/Star-Rating "
+        "set; no Equipment-Photo when template lacks extra_dynamic_fields",
+        result.get("success") is True
+        and captured.get("template_id") == "tpl-bold-quote-123"
+        and mods.get("Review-Text", {}).get("text")
+            == "Great rental, machine was clean and ready."
+        and mods.get("Reviewer-Name", {}).get("text") == "Carrie"
+        and mods.get("Star-Rating", {}).get("text") == "★★★★★"
+        and "Equipment-Photo" not in mods,
+        f"result={result!r}, mods={mods!r}",
+    )
+
+
+def test_render_review_image_includes_equipment_photo_when_supported() -> None:
+    """Equipment-Photo populated only when the template lists it in
+    extra_dynamic_fields AND a source URL is available."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["modifications"] = modifications
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "x", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_image": {
+                "templates": {
+                    "photo_testimonial": {
+                        "id": "tpl-photo-testimonial",
+                        "name": "Photo Testimonial",
+                        "extra_dynamic_fields": ["Equipment-Photo"],
+                    },
+                },
+            },
+        },
+    })
+    review = {
+        "review_id": "rev-002",
+        "reviewer_first_name": "Carrie",
+        "excerpt_long": "Solid rental",
+    }
+    source_url = "https://drive.google.com/uc?id=ABC&export=download"
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        drafter._render_review_image(
+            row_id="TEST-002",
+            review_data=review,
+            source_image_url=source_url,
+            config=config,
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    _check(
+        "12. _render_review_image — Equipment-Photo populated on "
+        "photo_testimonial when source URL provided",
+        mods.get("Equipment-Photo", {}).get("source") == source_url,
+        f"mods={mods!r}",
+    )
+
+
+def test_render_review_video_builds_modifications() -> None:
+    """_render_review_video sends Review-Text + Reviewer-Name only (no
+    Star-Rating — video templates use individual Star-N elements)."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["template_id"] = template_id
+        captured["modifications"] = modifications
+        captured["output_path"] = output_path
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "v", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_video": {
+                "templates": {
+                    "star_cascade": {
+                        "id": "video-tpl-1",
+                        "name": "Star Cascade",
+                    },
+                },
+            },
+        },
+    })
+    review = {
+        "review_id": "rev-003",
+        "reviewer_first_name": "Mike",
+        "excerpt_long": "Excellent service",
+    }
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter._render_review_video(
+            row_id="TEST-003",
+            review_data=review,
+            source_image_url="",
+            config=config,
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    _check(
+        "13. _render_review_video — Review-Text/Reviewer-Name only; "
+        "no Star-Rating; output path ends .mp4",
+        result.get("success") is True
+        and captured.get("template_id") == "video-tpl-1"
+        and mods.get("Review-Text", {}).get("text") == "Excellent service"
+        and mods.get("Reviewer-Name", {}).get("text") == "Mike"
+        and "Star-Rating" not in mods
+        and captured.get("output_path", "").endswith(".mp4"),
+        f"result={result!r}, mods={mods!r}, "
+        f"output_path={captured.get('output_path')!r}",
+    )
+
+
+def test_generate_review_media_video_falls_back_to_image() -> None:
+    """When creatomate_review_video render fails, fall back to
+    creatomate_review_image with the same review data."""
+    call_log: list[str] = []
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        if output_path.endswith(".mp4"):
+            call_log.append("video-fail")
+            return {
+                "success": False, "output_path": "",
+                "render_id": "", "error": "simulated video failure",
+            }
+        call_log.append("image-ok")
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "x", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_video": {"templates": {"star_cascade": {"id": "vid"}}},
+            "review_image": {"templates": {"bold_quote_card": {"id": "img"}}},
+        },
+    })
+    review = {"review_id": "x", "reviewer_first_name": "Y", "excerpt_long": "Z"}
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter._generate_review_media(
+            row={"row_id": "TEST-004"},
+            media_format="creatomate_review_video",
+            review_data=review,
+            image_id="",
+            config=config,
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    chain = result.get("fallback_chain", [])
+    _check(
+        "14. _generate_review_media — review_video failure falls back to review_image",
+        result.get("success") is True
+        and result.get("media_format_used") == "creatomate_review_image"
+        and call_log == ["video-fail", "image-ok"]
+        and len(chain) == 1
+        and chain[0][0] == "creatomate_review_video",
+        f"result={result!r}, call_log={call_log!r}",
+    )
+
+
+def test_generate_review_media_image_no_fallback() -> None:
+    """creatomate_review_image failure does NOT trigger a fallback — it
+    doesn't need a source photo, so there's nothing to fall back to."""
+    call_log: list[str] = []
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        call_log.append(output_path)
+        return {
+            "success": False, "output_path": "",
+            "render_id": "", "error": "simulated failure",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_image": {"templates": {"bold_quote_card": {"id": "img"}}},
+        },
+    })
+    review = {"review_id": "x", "reviewer_first_name": "Y", "excerpt_long": "Z"}
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter._generate_review_media(
+            row={"row_id": "TEST-005"},
+            media_format="creatomate_review_image",
+            review_data=review,
+            image_id="",
+            config=config,
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    _check(
+        "15. _generate_review_media — review_image failure has no fallback (1 attempt only)",
+        result.get("success") is False
+        and len(call_log) == 1
+        and len(result.get("fallback_chain", [])) == 1,
+        f"result={result!r}, call_log={call_log!r}",
+    )
+
+
+def test_generate_review_media_missing_review_data() -> None:
+    """When review_data is None, skip media generation and report it
+    without calling Creatomate."""
+    call_log: list[str] = []
+
+    def fake_render(*args, **kwargs):
+        call_log.append("called")
+        return {"success": True, "output_path": "", "render_id": "", "error": ""}
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter._generate_review_media(
+            row={"row_id": "TEST-006"},
+            media_format="creatomate_review_image",
+            review_data=None,
+            image_id="",
+            config=Config({}),
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    _check(
+        "16. _generate_review_media — None review_data returns failure "
+        "without calling Creatomate",
+        result.get("success") is False
+        and "no review data" in result.get("error", "").lower()
+        and call_log == [],
+        f"result={result!r}, call_log={call_log!r}",
+    )
+
+
+def test_update_review_usage_writes_correct_cells() -> None:
+    """update_review_usage finds the row by review_id and writes incremented
+    times_used + today's last_used_date."""
+    captured: dict = {}
+
+    def fake_find(spreadsheet_id, tab_name, column_name, value, service=None):
+        return [(7, {
+            "review_id": "rev-001",
+            "times_used": "2",
+            "last_used_date": "2026-04-01",
+        })]
+
+    def fake_update(spreadsheet_id, tab_name, row_number, col_updates, service=None):
+        captured["spreadsheet_id"] = spreadsheet_id
+        captured["tab_name"] = tab_name
+        captured["row_number"] = row_number
+        captured["col_updates"] = col_updates
+
+    orig_find = sheets_helpers.find_rows_by_column_value
+    orig_update = sheets_helpers.update_cells
+    sheets_helpers.find_rows_by_column_value = fake_find
+    sheets_helpers.update_cells = fake_update
+    try:
+        ok = drafter.update_review_usage(
+            review_id="rev-001",
+            reviews_sheet_id="sheet-123",
+            reviews_tab="Reviews",
+            service=None,
+        )
+    finally:
+        sheets_helpers.find_rows_by_column_value = orig_find
+        sheets_helpers.update_cells = orig_update
+
+    updates = captured.get("col_updates", {})
+    last_used = updates.get("last_used_date", "")
+    _check(
+        "17. update_review_usage — increments times_used, sets today's last_used_date",
+        ok is True
+        and captured.get("spreadsheet_id") == "sheet-123"
+        and captured.get("tab_name") == "Reviews"
+        and captured.get("row_number") == 7
+        and updates.get("times_used") == "3"
+        and len(last_used) == 10  # ISO YYYY-MM-DD
+        and last_used.count("-") == 2,
+        f"ok={ok}, captured={captured!r}",
+    )
+
+
+def test_update_review_usage_missing_review() -> None:
+    """When review_id not in sheet, return False without writing."""
+    write_calls: list = []
+
+    def fake_find(spreadsheet_id, tab_name, column_name, value, service=None):
+        return []
+
+    def fake_update(*args, **kwargs):
+        write_calls.append(args)
+
+    orig_find = sheets_helpers.find_rows_by_column_value
+    orig_update = sheets_helpers.update_cells
+    sheets_helpers.find_rows_by_column_value = fake_find
+    sheets_helpers.update_cells = fake_update
+    try:
+        ok = drafter.update_review_usage(
+            review_id="missing-id",
+            reviews_sheet_id="sheet-123",
+            reviews_tab="Reviews",
+            service=None,
+        )
+    finally:
+        sheets_helpers.find_rows_by_column_value = orig_find
+        sheets_helpers.update_cells = orig_update
+
+    _check(
+        "18. update_review_usage — missing review returns False, no write",
+        ok is False and write_calls == [],
+        f"ok={ok}, write_calls={write_calls!r}",
+    )
+
+
+def test_build_drafter_messages_includes_review_block() -> None:
+    """When review_data is provided, the user message carries a Social Proof
+    review block with reviewer name and full review text. When omitted, the
+    block must not appear."""
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Social Proof / Customer Story",
+        drafter.CQ_CTA_TYPE: "comment",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_review_image",
+        drafter.CQ_ANGLE: "Feature Carrie's review of the 50G",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+    review = {
+        "review_id": "rev-001",
+        "reviewer_first_name": "Carrie",
+        "review_text": (
+            "The 50G was ready when I arrived. Zeb walked me through the "
+            "controls. Solid rental overall."
+        ),
+        "excerpt_long": "The 50G was ready when I arrived",
+        "star_rating": "5",
+    }
+    common_args = dict(
+        catalog_item=None,
+        config=config,
+        brand_voice="(brand voice text)",
+        hook_skill="(hook skill text)",
+        cta_skill="(cta skill text)",
+        platform_style="(platform style text)",
+        few_shot_library="(few shot library text)",
+        strategy_guidance="(strategy guidance text)",
+    )
+
+    _sys_w, user_w = drafter.build_drafter_messages(
+        row=row, review_data=review, **common_args,
+    )
+    _sys_o, user_o = drafter.build_drafter_messages(
+        row=row, review_data=None, **common_args,
+    )
+
+    _check(
+        "19. build_drafter_messages — review_data injects block w/ reviewer "
+        "name + full review; omitted when review_data is None",
+        "Review Featured in This Post" in user_w
+        and "Carrie" in user_w
+        and "The 50G was ready when I arrived. Zeb walked me through the "
+            "controls." in user_w
+        and "Review Featured in This Post" not in user_o,
+        f"with_block={'Review Featured' in user_w}, "
+        f"without_block_absent={'Review Featured' not in user_o}",
+    )
+
+
+# ----------------------------------------------------------------------
 # Integration test
 # ----------------------------------------------------------------------
 
@@ -444,6 +899,16 @@ def run_tests(run_live: bool) -> int:
     test_banned_language_check()
     test_platform_char_limit()
     test_build_drafter_messages_anti_fabrication()
+    test_find_review_by_id()
+    test_render_review_image_builds_modifications()
+    test_render_review_image_includes_equipment_photo_when_supported()
+    test_render_review_video_builds_modifications()
+    test_generate_review_media_video_falls_back_to_image()
+    test_generate_review_media_image_no_fallback()
+    test_generate_review_media_missing_review_data()
+    test_update_review_usage_writes_correct_cells()
+    test_update_review_usage_missing_review()
+    test_build_drafter_messages_includes_review_block()
 
     if run_live:
         print()
