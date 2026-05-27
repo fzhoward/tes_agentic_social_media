@@ -67,6 +67,17 @@ TEXT_OVERLAY_FORMATS: set[str] = {"image2_text_overlay", "creatomate_text_overla
 
 REVIEW_MEDIA_FORMATS: set[str] = {"creatomate_review_image", "creatomate_review_video"}
 
+# Media formats that require a source equipment photo (and therefore a
+# focus_equipment_id). Used by enforce_equipment_format_requires_focus to
+# catch posts where the LLM picked an equipment-photo format but left
+# focus_equipment_id empty.
+EQUIPMENT_MEDIA_FORMATS: set[str] = {
+    "image2_enhanced",
+    "image2_text_overlay",
+    "creatomate_text_overlay",
+    "creatomate_video",
+}
+
 # Default review media format used when correcting an invalid assignment.
 DEFAULT_REVIEW_MEDIA_FORMAT: str = "creatomate_review_image"
 
@@ -1026,30 +1037,44 @@ def enforce_image_coverage(
     return kept, warnings
 
 
-def enforce_video_requires_equipment(
-    posts: list[dict], replacement_format: str = "image2_enhanced"
+def enforce_equipment_format_requires_focus(
+    posts: list[dict],
+    replacement_format: str = DEFAULT_EQUIPMENT_MEDIA_FORMAT,
 ) -> list[str]:
-    """Reassign creatomate_video posts that have no focus_equipment_id.
+    """Reassign equipment-format posts that have no focus_equipment_id.
 
-    creatomate_video needs a source image (the Equipment-Photo template
-    field), so it cannot run on a post without focus_equipment_id. We
-    rewrite media_format in place to a non-video alternative and emit a
-    warning. Returns warnings.
+    Every equipment media format (image2_enhanced, image2_text_overlay,
+    creatomate_text_overlay, creatomate_video) needs a source equipment
+    photo, so none of them can run on a post without focus_equipment_id.
+    When the LLM produces such a row, we rewrite media_format in place to
+    ``replacement_format`` (default image2_enhanced) and emit a warning.
+
+    This subsumes the old enforce_video_requires_equipment rule, which
+    only caught creatomate_video — owners observed image2_text_overlay
+    and creatomate_text_overlay slipping through with empty focus and
+    silently producing media-less drafts downstream.
+
+    Returns the list of warnings.
     """
     warnings: list[str] = []
     for post in posts:
-        if str(post.get(CQ_MEDIA_FORMAT, "")).strip() != "creatomate_video":
+        media_format = str(post.get(CQ_MEDIA_FORMAT, "")).strip()
+        if media_format not in EQUIPMENT_MEDIA_FORMATS:
             continue
         if str(post.get(CQ_FOCUS_EQUIPMENT, "")).strip():
             continue
+        # No-op when the post is already on the replacement format — still
+        # worth logging because the downstream media pipeline will skip
+        # rendering (no source image).
         scheduled = post.get(CQ_SCHEDULED, "")
+        original_format = media_format
         post[CQ_MEDIA_FORMAT] = replacement_format
-        # text_overlay is derived from media_format; refresh it so the field
-        # downstream consumers read stays consistent.
+        # text_overlay is derived from media_format; refresh so downstream
+        # consumers stay consistent.
         post[CQ_TEXT_OVERLAY] = derive_text_overlay(replacement_format)
         warnings.append(
-            f"post with empty focus_equipment_id had media_format="
-            f"'creatomate_video' (requires a source image) — reassigned to "
+            f"post with empty focus_equipment_id had equipment media_format="
+            f"{original_format!r} (requires a source image) — reassigned to "
             f"{replacement_format!r} (scheduled_datetime={scheduled!r})"
         )
     return warnings
@@ -1577,8 +1602,10 @@ def run(dry_run: bool = False) -> dict:
         valid_posts, catalog_by_id
     )
     validation_warnings.extend(image_coverage_warnings)
-    video_focus_warnings = enforce_video_requires_equipment(valid_posts)
-    validation_warnings.extend(video_focus_warnings)
+    equipment_focus_warnings = enforce_equipment_format_requires_focus(
+        valid_posts
+    )
+    validation_warnings.extend(equipment_focus_warnings)
 
     if not valid_posts:
         return {

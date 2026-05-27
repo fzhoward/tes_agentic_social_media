@@ -709,7 +709,8 @@ def test_enforce_image_coverage_drops_zero_image_media_posts() -> None:
     )
 
 
-def test_enforce_video_requires_equipment_reassigns_when_focus_empty() -> None:
+def test_enforce_equipment_format_requires_focus_video() -> None:
+    """Original creatomate_video focus check, now via the broader rule."""
     posts = [
         # Bad — creatomate_video with no focus_equipment_id.
         {strategist.CQ_PLATFORM: "facebook",
@@ -723,7 +724,7 @@ def test_enforce_video_requires_equipment_reassigns_when_focus_empty() -> None:
          strategist.CQ_MEDIA_FORMAT: "creatomate_video",
          strategist.CQ_TEXT_OVERLAY: "FALSE",
          strategist.CQ_SCHEDULED: "2026-05-29T18:15:00-04:00"},
-        # Good — non-video media format with no focus.
+        # Bad too — image2_enhanced with no focus (broader rule catches this).
         {strategist.CQ_PLATFORM: "instagram",
          strategist.CQ_FOCUS_EQUIPMENT: "",
          strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
@@ -731,23 +732,95 @@ def test_enforce_video_requires_equipment_reassigns_when_focus_empty() -> None:
          strategist.CQ_SCHEDULED: "2026-05-30T09:00:00-04:00"},
     ]
 
-    warnings = strategist.enforce_video_requires_equipment(posts)
+    warnings = strategist.enforce_equipment_format_requires_focus(posts)
 
-    bad_post = posts[0]
-    good_video_post = posts[1]
-    untouched_post = posts[2]
+    bad_video = posts[0]
+    good_video = posts[1]
+    bad_image = posts[2]
 
     _check(
-        "18. enforce_video_requires_equipment — reassigns video on focus-less rows, "
-        "leaves video-with-focus and non-video rows untouched",
-        len(warnings) == 1
-        and bad_post[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced"
-        and bad_post[strategist.CQ_TEXT_OVERLAY] == "FALSE"
-        and good_video_post[strategist.CQ_MEDIA_FORMAT] == "creatomate_video"
-        and untouched_post[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced",
-        f"warnings={warnings}, bad_fmt={bad_post[strategist.CQ_MEDIA_FORMAT]!r}, "
-        f"good_fmt={good_video_post[strategist.CQ_MEDIA_FORMAT]!r}, "
-        f"untouched_fmt={untouched_post[strategist.CQ_MEDIA_FORMAT]!r}",
+        "18. enforce_equipment_format_requires_focus — reassigns video and "
+        "still-equipment image2_enhanced rows when focus is empty; leaves "
+        "video-with-focus alone",
+        len(warnings) == 2
+        and bad_video[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced"
+        and bad_video[strategist.CQ_TEXT_OVERLAY] == "FALSE"
+        and good_video[strategist.CQ_MEDIA_FORMAT] == "creatomate_video"
+        # image2_enhanced with empty focus stays on image2_enhanced (the
+        # replacement is the same format) but still emits a warning so
+        # downstream operators see the issue.
+        and bad_image[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced",
+        f"warnings={warnings}, bad_video_fmt={bad_video[strategist.CQ_MEDIA_FORMAT]!r}, "
+        f"good_video_fmt={good_video[strategist.CQ_MEDIA_FORMAT]!r}, "
+        f"bad_image_fmt={bad_image[strategist.CQ_MEDIA_FORMAT]!r}",
+    )
+
+
+def test_enforce_equipment_format_requires_focus_all_equipment_formats() -> None:
+    """All four equipment formats — image2_enhanced, image2_text_overlay,
+    creatomate_text_overlay, creatomate_video — get reassigned to
+    image2_enhanced when focus_equipment_id is empty. Review formats are
+    untouched (they don't need a source equipment photo)."""
+    posts = [
+        {strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T09:00:00-04:00"},
+        {strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "image2_text_overlay",
+         strategist.CQ_TEXT_OVERLAY: "TRUE",
+         strategist.CQ_SCHEDULED: "2026-05-28T10:00:00-04:00"},
+        {strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_text_overlay",
+         strategist.CQ_TEXT_OVERLAY: "TRUE",
+         strategist.CQ_SCHEDULED: "2026-05-28T11:00:00-04:00"},
+        {strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_video",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T12:00:00-04:00"},
+        # Review formats don't need focus and must NOT be touched.
+        {strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_review_image",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T13:00:00-04:00"},
+        {strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "creatomate_review_video",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T14:00:00-04:00"},
+    ]
+
+    warnings = strategist.enforce_equipment_format_requires_focus(posts)
+
+    formats_after = [p[strategist.CQ_MEDIA_FORMAT] for p in posts]
+    overlay_after = [p[strategist.CQ_TEXT_OVERLAY] for p in posts]
+
+    # All four equipment-format posts → image2_enhanced (and text_overlay
+    # refreshed to FALSE since image2_enhanced is not a text-overlay format).
+    equipment_all_reassigned = (
+        formats_after[0] == "image2_enhanced"
+        and formats_after[1] == "image2_enhanced"
+        and formats_after[2] == "image2_enhanced"
+        and formats_after[3] == "image2_enhanced"
+    )
+    text_overlay_refreshed = (
+        overlay_after[0] == "FALSE"
+        and overlay_after[1] == "FALSE"
+        and overlay_after[2] == "FALSE"
+        and overlay_after[3] == "FALSE"
+    )
+    review_untouched = (
+        formats_after[4] == "creatomate_review_image"
+        and formats_after[5] == "creatomate_review_video"
+    )
+
+    _check(
+        "18b. enforce_equipment_format_requires_focus — all 4 equipment "
+        "formats reassigned; text_overlay refreshed; review formats untouched",
+        equipment_all_reassigned
+        and text_overlay_refreshed
+        and review_untouched
+        and len(warnings) == 4,
+        f"formats={formats_after}, overlays={overlay_after}, warnings={warnings}",
     )
 
 
@@ -1062,7 +1135,8 @@ def run_tests() -> int:
     test_apply_angle_grounding_check_replaces_and_warns()
     test_compact_catalog_line_flags_zero_image_items()
     test_enforce_image_coverage_drops_zero_image_media_posts()
-    test_enforce_video_requires_equipment_reassigns_when_focus_empty()
+    test_enforce_equipment_format_requires_focus_video()
+    test_enforce_equipment_format_requires_focus_all_equipment_formats()
     test_filter_usable_reviews()
     test_compact_review_line_contains_required_fields()
     test_validate_post_with_review_id()
