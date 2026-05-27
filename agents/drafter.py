@@ -916,6 +916,51 @@ def build_equipment_block(catalog_item: dict | None) -> str:
     return "\n".join(parts)
 
 
+def _format_candidate_line(candidate: dict) -> str:
+    """Format a single image-candidate descriptor line for the LLM prompt."""
+    pc = candidate.get("photo_context", "").strip() or "(none)"
+    jt = candidate.get("job_type", "").strip() or "(none)"
+    nt = candidate.get("notes", "").strip() or "(none)"
+    return f"Photo Context: {pc} | Job Type: {jt} | Notes: {nt}"
+
+
+def build_image_candidates_block(image_candidates: list[dict] | None) -> str:
+    """Build the image-context block injected into the user message.
+
+    - 0 candidates / None: returns empty string (no block).
+    - 1 candidate: returns a context line so the LLM knows what the photo shows.
+    - 2+ candidates: returns the selection block, asking the LLM to pick.
+    """
+    if not image_candidates:
+        return ""
+
+    if len(image_candidates) == 1:
+        line = _format_candidate_line(image_candidates[0])
+        return (
+            "# Source Image Context\n\n"
+            "The source image for this post shows:\n"
+            f"{line}\n\n"
+            "Write your caption to complement this visual.\n"
+        )
+
+    lines = []
+    for c in image_candidates:
+        rank = c.get("rank", "?")
+        lines.append(
+            f"Candidate {rank} (rank {rank}): {_format_candidate_line(c)}"
+        )
+    candidates_listing = "\n".join(lines)
+    return (
+        "# Available Source Images\n\n"
+        "The following images are available for this post. Select the best-fit "
+        "image for the assigned angle and content type. Return your choice as "
+        "`selected_image_id` in the JSON output.\n\n"
+        f"{candidates_listing}\n\n"
+        "Pick the image whose context best matches the post's angle. If no "
+        "image is a strong fit, pick rank 1 (the default).\n"
+    )
+
+
 def build_drafter_messages(
     row: dict,
     catalog_item: dict | None,
@@ -930,6 +975,7 @@ def build_drafter_messages(
     review_data: dict | None = None,
     review_excerpt_skill: str = "",
     review_excerpt_max_chars: int | None = None,
+    image_candidates: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build (system_message, user_message) for the Anthropic call."""
     platform = str(row.get(CQ_PLATFORM, "")).strip().lower()
@@ -1002,6 +1048,9 @@ def build_drafter_messages(
 
     is_link_post = cta_type == "click"
     overlay_needed = text_overlay == "TRUE"
+
+    image_candidates_block = build_image_candidates_block(image_candidates)
+    has_multi_candidates = bool(image_candidates) and len(image_candidates) > 1
 
     if review_data:
         review_block = (
@@ -1103,6 +1152,7 @@ def build_drafter_messages(
   "image_overlay_hook": "3-7 word text for image overlay. Empty string if text_overlay is FALSE.",
   "creative_hook_text": "1-7 word bold typographic hook for the Creatomate Hook-Text field. Punchy, declarative. Distinct hook — not a substring of caption_hook or image_overlay_hook. No trailing punctuation except '?'.",
   "review_excerpt": "Verbatim substring of Full review text. Selected per the Review Excerpt Selection criteria. Fits within the template character budget. Empty string when this is not a Social Proof post.",
+  "selected_image_id": "The image_id of the candidate you selected. Empty string if no candidates were provided or only one was available.",
   "first_comment": "URL with short prefix for link posts. Empty string if not a link post.",
   "draft_rationale": "1-2 sentence note on the angle taken and any quality concerns."
 }"""
@@ -1125,7 +1175,7 @@ draft_notes: {draft_notes or '(none)'}
 
 {equipment_block}
 
-{review_block}# Brand Voice (full)
+{image_candidates_block}{review_block}# Brand Voice (full)
 
 {brand_voice}
 
@@ -1196,6 +1246,7 @@ Return exactly this JSON shape (no markdown fences, no commentary):
 - `image_overlay_hook` is 3-7 words max. Required when text_overlay is {text_overlay}; {'must be populated' if overlay_needed else 'must be empty string'}.
 - `creative_hook_text` is 1-7 words max and is ALWAYS populated. It must be distinct from `caption_hook` (no substring overlap in either direction) and must not end with `.`, `,`, `;`, or `:` (a trailing `?` is fine).
 - `review_excerpt` is populated ONLY for Social Proof posts (a review block appears above when so). When such a block is shown, the excerpt MUST be a verbatim substring of the full review text (no rewriting, no paraphrasing) and must fit within the character budget given in the excerpt-selection section. Otherwise `review_excerpt` must be an empty string.
+- `selected_image_id`: when multiple source images are listed above, return the image_id of the candidate whose context best matches this post's angle. When only one image is available or no candidates are listed, return empty string.
 - `first_comment` is populated {'(link post — include the URL ' + link_target + ' with a short lead-in prefix)' if is_link_post else '(empty string — this is not a link post)'}.
 - The phone number for call CTAs is: {phone}
 - Never include pricing language (per pricing policy).
@@ -1250,6 +1301,7 @@ def get_llm_draft(
     skills: dict[str, str],
     review_data: dict | None = None,
     review_excerpt_max_chars: int | None = None,
+    image_candidates: list[dict] | None = None,
 ) -> dict:
     """Call the LLM with one JSON-only retry. Returns the parsed dict."""
     common_kwargs = dict(
@@ -1265,6 +1317,7 @@ def get_llm_draft(
         review_data=review_data,
         review_excerpt_skill=skills.get("review_excerpt_selection", ""),
         review_excerpt_max_chars=review_excerpt_max_chars,
+        image_candidates=image_candidates,
     )
     system_msg, user_msg = build_drafter_messages(**common_kwargs)
 
@@ -2141,7 +2194,11 @@ def draft_single_row(
             )
 
     # --- Step 2: select source image ---
+    media_format = str(row.get(CQ_MEDIA_FORMAT, "")).strip()
     existing_image_id = str(row.get(CQ_SOURCE_IMAGE, "")).strip()
+    image_candidates: list[dict] = []
+    fallback_image_id: str = ""
+
     if existing_image_id:
         image_result = {
             "image_id": existing_image_id,
@@ -2149,7 +2206,40 @@ def draft_single_row(
             "total_available": 0,
             "fallback": False,
         }
+    elif catalog_item is not None and media_format not in REVIEW_MEDIA_FORMATS:
+        candidates_result = image_selector.select_top_candidates(
+            equipment_id=focus_id,
+            catalog_row=catalog_item,
+            config=config,
+            service=context["sheets_service"],
+            max_candidates=5,
+        )
+        image_candidates = candidates_result.get("candidates", [])
+        fallback_image_id = candidates_result.get("fallback_image_id", "")
+
+        if image_candidates:
+            image_result = {
+                "image_id": image_candidates[0]["image_id"],
+                "selection_reason": "top-ranked candidate (pending LLM selection)",
+                "total_available": candidates_result.get("total_available", 0),
+                "fallback": False,
+            }
+        elif fallback_image_id:
+            image_result = {
+                "image_id": fallback_image_id,
+                "selection_reason": "fallback to primary_image_id (no candidates)",
+                "total_available": 0,
+                "fallback": True,
+            }
+        else:
+            image_result = {
+                "image_id": "",
+                "selection_reason": "no images available",
+                "total_available": 0,
+                "fallback": True,
+            }
     elif catalog_item is not None:
+        # Review media path — keep deterministic single-image selection.
         image_result = image_selector.select_source_image(
             equipment_id=focus_id,
             catalog_row=catalog_item,
@@ -2165,7 +2255,6 @@ def draft_single_row(
         }
 
     image_id = str(image_result.get("image_id", "")).strip()
-    media_format = str(row.get(CQ_MEDIA_FORMAT, "")).strip()
     if (
         not image_id
         and media_format != ""
@@ -2197,6 +2286,7 @@ def draft_single_row(
             skills=context["skills"],
             review_data=review_data,
             review_excerpt_max_chars=review_excerpt_max_chars,
+            image_candidates=image_candidates,
         )
     except Exception as exc:
         return {
@@ -2248,6 +2338,22 @@ def draft_single_row(
     creative_hook_text_val = str(parsed.get("creative_hook_text", "")).strip()
     first_comment = str(parsed.get("first_comment", "")).strip()
     draft_rationale = str(parsed.get("draft_rationale", "")).strip()
+
+    # --- Step 5c: apply LLM image selection ---
+    if image_candidates and len(image_candidates) > 1:
+        llm_image_pick = str(parsed.get("selected_image_id", "")).strip()
+        valid_ids = {c["image_id"] for c in image_candidates}
+        if llm_image_pick and llm_image_pick in valid_ids:
+            image_id = llm_image_pick
+            image_result["image_id"] = llm_image_pick
+            image_result["selection_reason"] = "LLM-selected from candidates"
+        elif llm_image_pick:
+            print(
+                f"[drafter] {row_id}: LLM selected_image_id "
+                f"{llm_image_pick!r} not in candidate list — "
+                f"keeping top-ranked default",
+                file=sys.stderr,
+            )
 
     # --- Step 6b: review-excerpt selection + validation ---
     # When this is a Social Proof post, the LLM returned a `review_excerpt`

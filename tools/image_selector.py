@@ -35,6 +35,8 @@ META_MODEL = "Equipment Model"
 META_TIMESTAMP = "Timestamp"
 META_PHOTO_QUALITY = "Photo Quality"
 META_PHOTO_CONTEXT = "Photo Context"
+META_JOB_TYPE = "Job Type"
+META_NOTES = "Notes"
 
 # --- Content Queue columns (for rotation history) ---
 CQ_FOCUS_EQUIPMENT = "focus_equipment_id"
@@ -335,4 +337,123 @@ def select_source_image(
         "selection_reason": reason,
         "total_available": total_available,
         "fallback": False,
+    }
+
+
+def _empty_candidates_result(
+    primary_image_id: str,
+    error: str,
+) -> dict:
+    """Build a candidates result dict with no candidates."""
+    return {
+        "candidates": [],
+        "total_available": 0,
+        "fallback_image_id": (primary_image_id or "").strip(),
+        "error": error,
+    }
+
+
+def select_top_candidates(
+    equipment_id: str,
+    catalog_row: dict,
+    config: Config,
+    service: Any = None,
+    max_candidates: int = 5,
+) -> dict:
+    """Return the top N image candidates with metadata for LLM-assisted selection.
+
+    Uses the same filtering and ranking pipeline as select_source_image:
+    1. Read Image Metadata sheet, filter by category+model
+    2. Remove recently-used images (rotation window)
+    3. Rank by quality > context > recency
+    4. Return the top `max_candidates` (or all if fewer exist)
+
+    Returns a dict:
+        candidates: list of dicts, each with:
+            image_id: Drive file ID
+            photo_context: str (e.g. "Equipment Working")
+            job_type: str (e.g. "Land Clearing")
+            notes: str (free text, may be empty)
+            rank: int (1 = highest ranked by deterministic scoring)
+        total_available: int
+        fallback_image_id: str (primary_image_id from catalog, for fallback)
+        error: str (empty if no error)
+    """
+    image_meta_id = (config.get("catalog.image_metadata_sheet_id", "") or "").strip()
+    queue_id = (config.get("drive.content_queue_sheet_id", "") or "").strip()
+    primary_image_id = str(catalog_row.get(CAT_PRIMARY_IMAGE_ID, "")).strip()
+
+    if not image_meta_id:
+        return _empty_candidates_result(primary_image_id, "no image metadata sheet configured")
+
+    if service is None:
+        try:
+            service = sheets_helpers.get_sheets_service()
+        except Exception as exc:
+            print(
+                f"[image_selector] WARN: could not build Sheets service: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return _empty_candidates_result(primary_image_id, "sheets service unavailable")
+
+    try:
+        candidates = get_images_for_equipment(catalog_row, image_meta_id, service)
+    except Exception as exc:
+        print(
+            f"[image_selector] WARN: Image Metadata sheet read failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return _empty_candidates_result(primary_image_id, "image_metadata read failed")
+
+    if not candidates:
+        return _empty_candidates_result(primary_image_id, "no metadata rows")
+
+    total_available = len(candidates)
+
+    used_ids: set[str] = set()
+    if queue_id:
+        try:
+            used_ids = get_recently_used_image_ids(
+                equipment_id, queue_id, service,
+            )
+        except Exception as exc:
+            print(
+                f"[image_selector] WARN: Content Queue read failed; "
+                f"skipping rotation: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            used_ids = set()
+
+    unused = [
+        r for r in candidates
+        if str(r.get(META_IMAGE_ID, "")).strip() not in used_ids
+    ]
+    if not unused:
+        print(
+            f"[image_selector] all {total_available} images for "
+            f"{equipment_id} used in last {ROTATION_DAYS} days; filter reset",
+            file=sys.stderr,
+        )
+        unused = candidates
+
+    ranked = sorted(unused, key=_image_rank, reverse=True)
+    top = ranked[: max(1, max_candidates)]
+
+    out_candidates: list[dict] = []
+    for idx, row in enumerate(top, start=1):
+        out_candidates.append({
+            "image_id": str(row.get(META_IMAGE_ID, "")).strip(),
+            "photo_context": str(row.get(META_PHOTO_CONTEXT, "") or "").strip(),
+            "job_type": str(row.get(META_JOB_TYPE, "") or "").strip(),
+            "notes": str(row.get(META_NOTES, "") or "").strip(),
+            "rank": idx,
+        })
+
+    return {
+        "candidates": out_candidates,
+        "total_available": total_available,
+        "fallback_image_id": primary_image_id,
+        "error": "",
     }
