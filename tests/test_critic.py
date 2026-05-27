@@ -850,11 +850,15 @@ def test_critique_single_row_writes_back(
     updates = captured_updates.get("col_updates", {})
     assert updates.get(critic.CQ_CRITIC_SCORE) == "pass"
     assert critic.CQ_CRITIC_NOTES in updates
-    # critic_notes should be parseable JSON
+
+    # critic_notes holds the full Critic output JSON.
     parsed_notes = json.loads(updates[critic.CQ_CRITIC_NOTES])
     assert parsed_notes["revision_round"] == 1
     assert isinstance(parsed_notes["failed_checks"], list)
+    assert isinstance(parsed_notes["warnings"], list)
     assert isinstance(parsed_notes["passed_checks"], list)
+    assert "notes" in parsed_notes
+
     assert updates.get(critic.CQ_STATUS) == "awaiting_approval"
 
 

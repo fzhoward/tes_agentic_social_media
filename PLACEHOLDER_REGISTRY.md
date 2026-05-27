@@ -219,8 +219,8 @@
 # Total: 22 columns. 40 data rows.
 
 # --- Content Queue (drive.content_queue_sheet_id) ---
-# Updated: Session 16 — Critic write-back schema simplified to two columns
-#   (critic_score + critic_notes). Total column count is 30.
+# Updated: Session 16 — Critic write-back schema consolidated to two
+#   columns (critic_score + critic_notes). Live sheet migrated to match.
 #
 # Strategist-written fields (set when row is created):
 #   row_id, status, platform, scheduled_datetime, objective,
@@ -236,8 +236,17 @@
 #   critic_score, critic_notes
 #
 #   critic_score   — verdict string: pass | soft_fail | hard_fail
-#   critic_notes   — JSON-serialized full Critic output (failed_checks,
-#                    warnings, passed_checks, notes)
+#   critic_notes   — JSON-serialized full Critic output:
+#                    {revision_round, failed_checks, warnings,
+#                     passed_checks, notes}
+#
+# Rationale for the 2-column shape: the Learning agent reads the
+# Performance Log + Content Queue content metadata but does NOT consume
+# Critic columns — those are an audit trail for the Slack approval card
+# and human review only. Keeping the structured fields (failed_checks,
+# warnings, passed_checks) inside critic_notes JSON avoids sheet bloat
+# while preserving every detail. The Slack approval card unpacks the JSON
+# at render time so the human sees the structured breakdown.
 #
 # Approval/publishing fields (set during approval and publishing):
 #   approved_datetime, published_datetime, socialbu_post_id, rejection_reason
