@@ -354,6 +354,39 @@ def validate_overlay_hook(
     return False, f"text_overlay flag must be TRUE or FALSE, got {flag!r}"
 
 
+def validate_review_excerpt(
+    excerpt: str,
+    review_text: str,
+    max_chars: int | None,
+) -> tuple[bool, str]:
+    """Return (ok, reason) for the LLM-selected review excerpt.
+
+    Rules:
+      - Non-empty.
+      - Verbatim substring of `review_text`. Any rewriting, paraphrasing, or
+        combining of disjoint phrases fails this check.
+      - Length ≤ ``max_chars`` when ``max_chars`` is provided.
+
+    Caller decides what to do on failure (the Drafter falls back to the
+    Reviews Sheet's `excerpt_long` and logs a warning).
+    """
+    e = (excerpt or "").strip()
+    if not e:
+        return False, "review_excerpt is empty"
+    if not (review_text or ""):
+        return False, "review_text is empty — cannot validate substring"
+    if e not in review_text:
+        return False, (
+            "review_excerpt is not a verbatim substring of review_text"
+        )
+    if max_chars is not None and len(e) > max_chars:
+        return False, (
+            f"review_excerpt length {len(e)} exceeds template "
+            f"max_review_text_chars={max_chars}"
+        )
+    return True, ""
+
+
 def validate_creative_hook_text(
     creative_hook: str,
     caption_hook: str,
@@ -738,6 +771,8 @@ def build_drafter_messages(
     strategy_guidance: str,
     retry_nudge: bool = False,
     review_data: dict | None = None,
+    review_excerpt_skill: str = "",
+    review_excerpt_max_chars: int | None = None,
 ) -> tuple[str, str]:
     """Build (system_message, user_message) for the Anthropic call."""
     platform = str(row.get(CQ_PLATFORM, "")).strip().lower()
@@ -825,6 +860,34 @@ def build_drafter_messages(
             f"{review_data.get(REV_REVIEW_TEXT, '')}\n"
             f"\"\"\"\n"
         )
+
+        budget_line = (
+            f"Character budget for the selected excerpt on this template: "
+            f"{review_excerpt_max_chars} chars. The excerpt MUST fit within "
+            f"this budget; if the best phrase would exceed it, pick the "
+            f"next-best phrase that fits."
+            if isinstance(review_excerpt_max_chars, int) and review_excerpt_max_chars > 0
+            else (
+                "Character budget for the selected excerpt is not configured "
+                "for this template — keep the excerpt short and self-contained."
+            )
+        )
+        excerpt_skill_section = (review_excerpt_skill or "").strip() or (
+            "(no review_excerpt_selection skill text loaded — apply the general "
+            "principle: pick the verbatim substring of the review that best "
+            "justifies the 5-star rating)"
+        )
+        review_block += (
+            "\n# Review Excerpt Selection\n\n"
+            "A Creatomate template will display a short excerpt of this review "
+            "as the visual centerpiece. You must select the portion of the "
+            "review that best communicates why the reviewer gave 5 stars and "
+            "output it as `review_excerpt` in the JSON. The excerpt must be a "
+            "VERBATIM substring of the Full review text shown above — do not "
+            "rearrange, combine, or paraphrase. You may trim from either end.\n\n"
+            f"{budget_line}\n\n"
+            f"{excerpt_skill_section}\n"
+        )
     else:
         review_block = ""
 
@@ -870,6 +933,7 @@ def build_drafter_messages(
   "cta_text": "The CTA line — last element of the caption. Empty string if cta_type is none.",
   "image_overlay_hook": "3-7 word text for image overlay. Empty string if text_overlay is FALSE.",
   "creative_hook_text": "1-7 word bold typographic hook for the Creatomate Hook-Text field. Punchy, declarative. Distinct hook — not a substring of caption_hook or image_overlay_hook. No trailing punctuation except '?'.",
+  "review_excerpt": "Verbatim substring of Full review text. Selected per the Review Excerpt Selection criteria. Fits within the template character budget. Empty string when this is not a Social Proof post.",
   "first_comment": "URL with short prefix for link posts. Empty string if not a link post.",
   "draft_rationale": "1-2 sentence note on the angle taken and any quality concerns."
 }"""
@@ -962,6 +1026,7 @@ Return exactly this JSON shape (no markdown fences, no commentary):
 - Vertical stack formatting in `caption_body`: every content line followed by a blank line (\\n\\n).
 - `image_overlay_hook` is 3-7 words max. Required when text_overlay is {text_overlay}; {'must be populated' if overlay_needed else 'must be empty string'}.
 - `creative_hook_text` is 1-7 words max and is ALWAYS populated. It must be distinct from `caption_hook` (no substring overlap in either direction) and must not end with `.`, `,`, `;`, or `:` (a trailing `?` is fine).
+- `review_excerpt` is populated ONLY for Social Proof posts (a review block appears above when so). When such a block is shown, the excerpt MUST be a verbatim substring of the full review text (no rewriting, no paraphrasing) and must fit within the character budget given in the excerpt-selection section. Otherwise `review_excerpt` must be an empty string.
 - `first_comment` is populated {'(link post — include the URL ' + link_target + ' with a short lead-in prefix)' if is_link_post else '(empty string — this is not a link post)'}.
 - The phone number for call CTAs is: {phone}
 - Never include pricing language (per pricing policy).
@@ -1014,9 +1079,10 @@ def get_llm_draft(
     config: Config,
     skills: dict[str, str],
     review_data: dict | None = None,
+    review_excerpt_max_chars: int | None = None,
 ) -> dict:
     """Call the LLM with one JSON-only retry. Returns the parsed dict."""
-    system_msg, user_msg = build_drafter_messages(
+    common_kwargs = dict(
         row=row,
         catalog_item=catalog_item,
         config=config,
@@ -1027,7 +1093,10 @@ def get_llm_draft(
         few_shot_library=skills["few_shot_library"],
         strategy_guidance=skills["strategy_guidance"],
         review_data=review_data,
+        review_excerpt_skill=skills.get("review_excerpt_selection", ""),
+        review_excerpt_max_chars=review_excerpt_max_chars,
     )
+    system_msg, user_msg = build_drafter_messages(**common_kwargs)
 
     last_exc: Exception | None = None
     for attempt in (1, 2):
@@ -1046,17 +1115,7 @@ def get_llm_draft(
             if attempt == 1:
                 # Rebuild with a JSON-only nudge.
                 system_msg, user_msg = build_drafter_messages(
-                    row=row,
-                    catalog_item=catalog_item,
-                    config=config,
-                    brand_voice=skills["brand_voice"],
-                    hook_skill=skills["hook_creation"],
-                    cta_skill=skills["cta"],
-                    platform_style=skills["platform_style"],
-                    few_shot_library=skills["few_shot_library"],
-                    strategy_guidance=skills["strategy_guidance"],
-                    retry_nudge=True,
-                    review_data=review_data,
+                    retry_nudge=True, **common_kwargs,
                 )
                 continue
             raise
@@ -1148,13 +1207,54 @@ def _select_review_template(
     return key, tid, extra
 
 
+def _select_review_template_max_chars(
+    media_format: str,
+    row_id: str,
+    config: Config,
+) -> int | None:
+    """Return the ``max_review_text_chars`` for the template that will render
+    for this row, or None if the format isn't a review format or the
+    template lacks the setting.
+
+    Selection is deterministic on ``row_id`` (same hash → same template),
+    so this can be called before rendering to determine the character
+    budget passed into the LLM prompt.
+    """
+    config_path = {
+        "creatomate_review_image": "creatomate.review_image.templates",
+        "creatomate_review_video": "creatomate.review_video.templates",
+    }.get(media_format)
+    if not config_path:
+        return None
+    templates = config.get(config_path, {}) or {}
+    key, _tid = select_template(templates, row_id)
+    if not key or not isinstance(templates, dict):
+        return None
+    template = templates.get(key, {})
+    if not isinstance(template, dict):
+        return None
+    raw = template.get("max_review_text_chars")
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 def _render_review_image(
     row_id: str,
     review_data: dict,
     source_image_url: str,
     config: Config,
+    excerpt: str | None = None,
 ) -> dict:
-    """Render a Creatomate review-image template. Returns a result dict."""
+    """Render a Creatomate review-image template. Returns a result dict.
+
+    ``excerpt`` is the Review-Text value to inject; when omitted or empty,
+    falls back to ``review_data[REV_EXCERPT_LONG]`` (legacy behavior).
+    """
     templates = config.get("creatomate.review_image.templates", {}) or {}
     key, tid, extra_fields = _select_review_template(templates, row_id)
     if not tid:
@@ -1165,8 +1265,12 @@ def _render_review_image(
             "template_key": "",
         }
 
+    review_text_value = (excerpt or "").strip() or str(
+        review_data.get(REV_EXCERPT_LONG, "")
+    )
+
     text_fields = {
-        "Review-Text": str(review_data.get(REV_EXCERPT_LONG, "")),
+        "Review-Text": review_text_value,
         "Reviewer-Name": str(review_data.get(REV_REVIEWER_FIRST_NAME, "")),
         "Star-Rating": REVIEW_STAR_RATING_GLYPH,
     }
@@ -1193,8 +1297,13 @@ def _render_review_video(
     review_data: dict,
     source_image_url: str,
     config: Config,
+    excerpt: str | None = None,
 ) -> dict:
-    """Render a Creatomate review-video template. Returns a result dict."""
+    """Render a Creatomate review-video template. Returns a result dict.
+
+    ``excerpt`` is the Review-Text value to inject; when omitted or empty,
+    falls back to ``review_data[REV_EXCERPT_LONG]`` (legacy behavior).
+    """
     templates = config.get("creatomate.review_video.templates", {}) or {}
     key, tid, extra_fields = _select_review_template(templates, row_id)
     if not tid:
@@ -1205,8 +1314,12 @@ def _render_review_video(
             "template_key": "",
         }
 
+    review_text_value = (excerpt or "").strip() or str(
+        review_data.get(REV_EXCERPT_LONG, "")
+    )
+
     text_fields = {
-        "Review-Text": str(review_data.get(REV_EXCERPT_LONG, "")),
+        "Review-Text": review_text_value,
         "Reviewer-Name": str(review_data.get(REV_REVIEWER_FIRST_NAME, "")),
     }
     image_fields: dict[str, str] = {}
@@ -1233,8 +1346,15 @@ def _generate_review_media(
     review_data: dict | None,
     image_id: str,
     config: Config,
+    excerpt: str | None = None,
 ) -> dict:
-    """Render a review media asset. Same return shape as generate_media."""
+    """Render a review media asset. Same return shape as generate_media.
+
+    ``excerpt`` is the Review-Text value to inject into the chosen template
+    (typically the LLM-selected excerpt validated against the original review
+    text). When empty/None, the renderers fall back to
+    ``review_data[REV_EXCERPT_LONG]``.
+    """
     row_id = str(row.get(CQ_ROW_ID, "")).strip() or "unknown"
 
     if not review_data:
@@ -1251,7 +1371,9 @@ def _generate_review_media(
     chain: list[tuple[str, str]] = []
 
     if media_format == "creatomate_review_image":
-        res = _render_review_image(row_id, review_data, source_image_url, config)
+        res = _render_review_image(
+            row_id, review_data, source_image_url, config, excerpt=excerpt,
+        )
         if res.get("success"):
             return {
                 "success": True,
@@ -1273,7 +1395,7 @@ def _generate_review_media(
 
     if media_format == "creatomate_review_video":
         video_res = _render_review_video(
-            row_id, review_data, source_image_url, config,
+            row_id, review_data, source_image_url, config, excerpt=excerpt,
         )
         if video_res.get("success"):
             return {
@@ -1293,8 +1415,13 @@ def _generate_review_media(
             f"({video_res.get('error')}) — falling back to creatomate_review_image",
             file=sys.stderr,
         )
+        # Note: the fallback uses the same excerpt budget — strict callers may
+        # want to re-validate against the review_image template's
+        # max_review_text_chars, but for now we keep the LLM-selected excerpt
+        # since the templates' budgets are close and the alternative is the
+        # generic excerpt_long fallback.
         image_res = _render_review_image(
-            row_id, review_data, source_image_url, config,
+            row_id, review_data, source_image_url, config, excerpt=excerpt,
         )
         if image_res.get("success"):
             return {
@@ -1375,6 +1502,7 @@ def generate_media(
     drive_service: Any,
     review_data: dict | None = None,
     creative_hook_text: str = "",
+    review_excerpt: str = "",
 ) -> dict:
     """Generate the media asset for `row`. Returns a result dict.
 
@@ -1402,6 +1530,7 @@ def generate_media(
             review_data=review_data,
             image_id=image_id,
             config=config,
+            excerpt=review_excerpt or None,
         )
 
     fallback_chain: list[tuple[str, str]] = []
@@ -1740,6 +1869,7 @@ def load_drafter_context(config: Config) -> dict[str, Any]:
         "image_prompt_social": _skill_safe("image_prompt_social", config),
         "few_shot_library": _skill_safe("few_shot_library", config),
         "strategy_guidance": _skill_safe("strategy_guidance", config),
+        "review_excerpt_selection": _skill_safe("review_excerpt_selection", config),
     }
 
     return {
@@ -1877,6 +2007,17 @@ def draft_single_row(
             file=sys.stderr,
         )
 
+    # --- Step 3b: pre-select the review template's character budget ---
+    # The Drafter does deterministic template rotation by row_id, so the same
+    # row_id used in _render_review_* later resolves to the same template
+    # here. Reading max_review_text_chars now lets us pass the budget to the
+    # LLM as a hard constraint on the selected excerpt.
+    review_excerpt_max_chars = (
+        _select_review_template_max_chars(media_format, row_id, config)
+        if media_format in REVIEW_MEDIA_FORMATS
+        else None
+    )
+
     # --- Step 4-5: caption via LLM ---
     try:
         parsed = get_llm_draft(
@@ -1885,6 +2026,7 @@ def draft_single_row(
             config=config,
             skills=context["skills"],
             review_data=review_data,
+            review_excerpt_max_chars=review_excerpt_max_chars,
         )
     except Exception as exc:
         return {
@@ -1927,6 +2069,35 @@ def draft_single_row(
     first_comment = str(parsed.get("first_comment", "")).strip()
     draft_rationale = str(parsed.get("draft_rationale", "")).strip()
 
+    # --- Step 6b: review-excerpt selection + validation ---
+    # When this is a Social Proof post, the LLM returned a `review_excerpt`
+    # field. Validate it is a verbatim substring of the original review text
+    # and fits within the template's character budget. On failure, fall back
+    # to excerpt_long from the Reviews Sheet (legacy behavior) and log a
+    # warning so the owner can spot recurring selection issues.
+    selected_review_excerpt: str = ""
+    review_excerpt_warning: str = ""
+    if media_format in REVIEW_MEDIA_FORMATS and review_data is not None:
+        llm_excerpt = str(parsed.get("review_excerpt", "")).strip()
+        ok_excerpt, reason_excerpt = validate_review_excerpt(
+            llm_excerpt,
+            str(review_data.get(REV_REVIEW_TEXT, "")),
+            review_excerpt_max_chars,
+        )
+        if ok_excerpt:
+            selected_review_excerpt = llm_excerpt
+        else:
+            fallback_excerpt = str(review_data.get(REV_EXCERPT_LONG, ""))
+            review_excerpt_warning = (
+                f"review_excerpt validation failed ({reason_excerpt}); "
+                f"falling back to Reviews Sheet excerpt_long"
+            )
+            print(
+                f"[drafter] {row_id}: {review_excerpt_warning}",
+                file=sys.stderr,
+            )
+            selected_review_excerpt = fallback_excerpt
+
     # --- Step 7: media generation ---
     media_result = generate_media(
         row=row,
@@ -1939,6 +2110,7 @@ def draft_single_row(
         drive_service=context["drive_service"],
         review_data=review_data,
         creative_hook_text=creative_hook_text_val,
+        review_excerpt=selected_review_excerpt,
     )
 
     media_generated = bool(media_result.get("success"))
@@ -2061,6 +2233,8 @@ def draft_single_row(
         "fallback_chain": fallback_chain,
         "caption": full_caption,
         "creative_hook_text": creative_hook_text_val,
+        "review_excerpt": selected_review_excerpt,
+        "review_excerpt_warning": review_excerpt_warning,
         "first_comment": first_comment,
         "draft_rationale": draft_rationale,
         "dry_run": dry_run,

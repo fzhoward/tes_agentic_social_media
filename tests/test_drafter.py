@@ -984,6 +984,362 @@ def test_generate_media_creatomate_video_uses_creative_hook_text() -> None:
     )
 
 
+def test_validate_review_excerpt_substring() -> None:
+    """validate_review_excerpt enforces the verbatim-substring rule."""
+    review = (
+        "The 50G was ready when I arrived. Zeb walked me through the "
+        "controls. Solid rental overall."
+    )
+    # Exact substring → pass.
+    ok_sub, _ = drafter.validate_review_excerpt(
+        "Zeb walked me through the controls", review, max_chars=None,
+    )
+    # Paraphrased (matches none of the review verbatim) → fail.
+    ok_para, reason_para = drafter.validate_review_excerpt(
+        "Zeb showed me how the machine worked", review, max_chars=None,
+    )
+    # Reordered/combined disjoint phrases → fail (not a contiguous substring).
+    ok_combined, reason_combined = drafter.validate_review_excerpt(
+        "Solid rental, Zeb walked me through the controls",
+        review, max_chars=None,
+    )
+    # Empty → fail.
+    ok_empty, reason_empty = drafter.validate_review_excerpt(
+        "", review, max_chars=None,
+    )
+    _check(
+        "26. validate_review_excerpt — verbatim substring passes; "
+        "paraphrase, recombined fragments, and empty all fail",
+        ok_sub
+        and (not ok_para) and "substring" in reason_para.lower()
+        and (not ok_combined) and "substring" in reason_combined.lower()
+        and (not ok_empty) and "empty" in reason_empty.lower(),
+        f"sub={ok_sub}, para={ok_para} ({reason_para!r}), "
+        f"combined={ok_combined} ({reason_combined!r}), "
+        f"empty={ok_empty} ({reason_empty!r})",
+    )
+
+
+def test_validate_review_excerpt_max_chars() -> None:
+    """validate_review_excerpt enforces the template character budget."""
+    review = "x" * 200
+    # Within budget.
+    ok_under, _ = drafter.validate_review_excerpt(
+        "x" * 100, review, max_chars=127,
+    )
+    # Equal to budget.
+    ok_equal, _ = drafter.validate_review_excerpt(
+        "x" * 127, review, max_chars=127,
+    )
+    # Over budget.
+    ok_over, reason_over = drafter.validate_review_excerpt(
+        "x" * 150, review, max_chars=127,
+    )
+    # max_chars=None disables the length check.
+    ok_no_limit, _ = drafter.validate_review_excerpt(
+        "x" * 500, "x" * 500, max_chars=None,
+    )
+    _check(
+        "27. validate_review_excerpt — respects template max_chars; "
+        "max_chars=None skips the length check",
+        ok_under and ok_equal
+        and (not ok_over) and "127" in reason_over
+        and ok_no_limit,
+        f"under={ok_under}, equal={ok_equal}, "
+        f"over={ok_over} ({reason_over!r}), no_limit={ok_no_limit}",
+    )
+
+
+def test_review_excerpt_does_not_start_with_first_word_heuristic() -> None:
+    """Heuristic guarding against the old first-N-chars behavior. A real
+    LLM-selected excerpt typically does NOT start with the first word of
+    the review — the first word is usually a generic opener ("Great",
+    "Highly", "Very"). A skill-following excerpt picks the proof phrase
+    further in. This is a heuristic, not absolute: the test wires up the
+    full validation flow with a known-good (skill-compliant) excerpt and
+    confirms validation passes; if a test ever rewires this to the literal
+    first-chars behavior, the assertion below catches it.
+    """
+    review = (
+        "Great company to work with. They delivered the mini excavator "
+        "right on time and it was exactly the machine we needed."
+    )
+    first_word = review.split()[0]
+
+    # Skill-compliant excerpt: starts inside the proof phrase, not at the opener.
+    good_excerpt = "delivered the mini excavator right on time"
+    # Old first-N-chars behavior would start with the first word.
+    legacy_excerpt = review[:40]
+
+    ok_good, _ = drafter.validate_review_excerpt(
+        good_excerpt, review, max_chars=80,
+    )
+    starts_with_first_word_good = good_excerpt.lower().startswith(
+        first_word.lower()
+    )
+
+    # The legacy form is still a valid substring (and short enough), so
+    # validation alone wouldn't catch it — the heuristic check is the
+    # signal. This documents the failure mode the skill is meant to fix.
+    ok_legacy, _ = drafter.validate_review_excerpt(
+        legacy_excerpt, review, max_chars=80,
+    )
+    starts_with_first_word_legacy = legacy_excerpt.lower().startswith(
+        first_word.lower()
+    )
+
+    _check(
+        "28. review excerpt heuristic — skill-compliant excerpt does NOT "
+        "start with the review's first word; the legacy first-N-chars "
+        "form does (documents the old failure mode)",
+        ok_good and not starts_with_first_word_good
+        and ok_legacy and starts_with_first_word_legacy,
+        f"good_valid={ok_good}, good_starts_first={starts_with_first_word_good}, "
+        f"legacy_valid={ok_legacy}, legacy_starts_first={starts_with_first_word_legacy}",
+    )
+
+
+def test_select_review_template_max_chars_reads_config() -> None:
+    """_select_review_template_max_chars returns the per-template budget
+    from config, and None for non-review formats."""
+    config = Config({
+        "creatomate": {
+            "review_image": {
+                "templates": {
+                    "only_one": {
+                        "id": "tpl-a",
+                        "max_review_text_chars": 168,
+                    },
+                },
+            },
+            "review_video": {
+                "templates": {
+                    "only_one": {
+                        "id": "tpl-v",
+                        "max_review_text_chars": 127,
+                    },
+                },
+            },
+        },
+    })
+    img_budget = drafter._select_review_template_max_chars(
+        "creatomate_review_image", "ROW-XYZ", config,
+    )
+    vid_budget = drafter._select_review_template_max_chars(
+        "creatomate_review_video", "ROW-XYZ", config,
+    )
+    non_review = drafter._select_review_template_max_chars(
+        "image2_enhanced", "ROW-XYZ", config,
+    )
+    _check(
+        "29. _select_review_template_max_chars — reads per-template budget; "
+        "returns None for non-review media_format",
+        img_budget == 168 and vid_budget == 127 and non_review is None,
+        f"img={img_budget}, vid={vid_budget}, non_review={non_review}",
+    )
+
+
+def test_render_review_image_uses_passed_excerpt() -> None:
+    """When an excerpt is passed to _render_review_image, that value
+    becomes Review-Text — NOT review_data[excerpt_long]."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["modifications"] = modifications
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "x", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_image": {
+                "templates": {
+                    "bold_quote_card": {"id": "tpl-bqc"},
+                },
+            },
+        },
+    })
+    review = {
+        "review_id": "rev-X",
+        "reviewer_first_name": "Carrie",
+        "excerpt_long": "FALLBACK EXCERPT — should not appear",
+    }
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        drafter._render_review_image(
+            row_id="TEST-RX-01",
+            review_data=review,
+            source_image_url="",
+            config=config,
+            excerpt="The skid steer was clean and ready to go.",
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    rt = mods.get("Review-Text", {}).get("text", "")
+    _check(
+        "30. _render_review_image — passed excerpt becomes Review-Text "
+        "(does NOT use excerpt_long fallback)",
+        rt == "The skid steer was clean and ready to go."
+        and "FALLBACK" not in rt,
+        f"Review-Text={rt!r}",
+    )
+
+
+def test_render_review_video_uses_passed_excerpt() -> None:
+    """Same contract for video templates."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["modifications"] = modifications
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "x", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_video": {
+                "templates": {
+                    "star_cascade": {"id": "tpl-sc"},
+                },
+            },
+        },
+    })
+    review = {
+        "review_id": "rev-Y",
+        "reviewer_first_name": "Mike",
+        "excerpt_long": "FALLBACK EXCERPT — should not appear",
+    }
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        drafter._render_review_video(
+            row_id="TEST-RV-01",
+            review_data=review,
+            source_image_url="",
+            config=config,
+            excerpt="Came through on a last-minute weekend rental.",
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    rt = mods.get("Review-Text", {}).get("text", "")
+    _check(
+        "31. _render_review_video — passed excerpt becomes Review-Text",
+        rt == "Came through on a last-minute weekend rental."
+        and "FALLBACK" not in rt,
+        f"Review-Text={rt!r}",
+    )
+
+
+def test_render_review_image_falls_back_to_excerpt_long_when_excerpt_empty() -> None:
+    """When the Drafter passes an empty excerpt (validation failure +
+    empty fallback edge case), the renderer falls back to
+    review_data[excerpt_long]."""
+    captured: dict = {}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        captured["modifications"] = modifications
+        return {
+            "success": True, "output_path": output_path,
+            "render_id": "x", "error": "",
+        }
+
+    config = Config({
+        "creatomate": {
+            "review_image": {
+                "templates": {"bold_quote_card": {"id": "tpl"}},
+            },
+        },
+    })
+    review = {
+        "review_id": "rev-Z",
+        "reviewer_first_name": "Pat",
+        "excerpt_long": "Backup excerpt from Reviews Sheet",
+    }
+
+    orig = creatomate_helpers.render_template
+    creatomate_helpers.render_template = fake_render
+    try:
+        drafter._render_review_image(
+            row_id="TEST-FB-01",
+            review_data=review,
+            source_image_url="",
+            config=config,
+            excerpt="",  # validation-failure fallback path
+        )
+    finally:
+        creatomate_helpers.render_template = orig
+
+    mods = captured.get("modifications", {})
+    rt = mods.get("Review-Text", {}).get("text", "")
+    _check(
+        "32. _render_review_image — empty excerpt falls back to excerpt_long",
+        rt == "Backup excerpt from Reviews Sheet",
+        f"Review-Text={rt!r}",
+    )
+
+
+def test_build_drafter_messages_injects_excerpt_skill_and_budget() -> None:
+    """When review_data is present, the LLM user message must include the
+    review_excerpt_selection skill text and the per-template character
+    budget passed via review_excerpt_max_chars."""
+    config = load_config()
+    row = {
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_OBJECTIVE: "brand_awareness",
+        drafter.CQ_CONTENT_TYPE: "Social Proof / Customer Story",
+        drafter.CQ_CTA_TYPE: "comment",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+        drafter.CQ_MEDIA_FORMAT: "creatomate_review_image",
+        drafter.CQ_ANGLE: "Feature Carrie's review",
+        drafter.CQ_DRAFT_NOTES: "",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+    review = {
+        "review_id": "rev-001",
+        "reviewer_first_name": "Carrie",
+        "review_text": "Solid rental experience.",
+        "excerpt_long": "Solid rental experience",
+        "star_rating": "5",
+    }
+    skill_text = (
+        "SKILL_SIGNATURE_LINE — pick the proof, not the pleasantry"
+    )
+    _, user_msg = drafter.build_drafter_messages(
+        row=row,
+        catalog_item=None,
+        config=config,
+        brand_voice="(brand)",
+        hook_skill="(hook)",
+        cta_skill="(cta)",
+        platform_style="(plat)",
+        few_shot_library="(fs)",
+        strategy_guidance="(strat)",
+        review_data=review,
+        review_excerpt_skill=skill_text,
+        review_excerpt_max_chars=168,
+    )
+    _check(
+        "33. build_drafter_messages — injects review_excerpt_selection skill "
+        "text and max_review_text_chars budget into the user message",
+        "SKILL_SIGNATURE_LINE" in user_msg
+        and "168" in user_msg
+        and "review_excerpt" in user_msg
+        and "Review Excerpt Selection" in user_msg,
+        f"has_skill={'SKILL_SIGNATURE_LINE' in user_msg}, "
+        f"has_budget={'168' in user_msg}, "
+        f"has_field={'review_excerpt' in user_msg}",
+    )
+
+
 def test_build_drafter_messages_includes_review_block() -> None:
     """When review_data is provided, the user message carries a Social Proof
     review block with reviewer name and full review text. When omitted, the
@@ -1181,6 +1537,14 @@ def run_tests(run_live: bool) -> int:
     test_build_drafter_messages_describes_creative_hook_text()
     test_generate_media_creatomate_text_overlay_uses_creative_hook_text()
     test_generate_media_creatomate_video_uses_creative_hook_text()
+    test_validate_review_excerpt_substring()
+    test_validate_review_excerpt_max_chars()
+    test_review_excerpt_does_not_start_with_first_word_heuristic()
+    test_select_review_template_max_chars_reads_config()
+    test_render_review_image_uses_passed_excerpt()
+    test_render_review_video_uses_passed_excerpt()
+    test_render_review_image_falls_back_to_excerpt_long_when_excerpt_empty()
+    test_build_drafter_messages_injects_excerpt_skill_and_budget()
 
     if run_live:
         print()

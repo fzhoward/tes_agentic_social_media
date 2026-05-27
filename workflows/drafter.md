@@ -23,6 +23,7 @@ The Drafter takes a single planned Content Queue row and produces the finished d
 | Catalog item record | Google Sheets (if `focus_equipment_id` is set) | Item specs, description, tags, images |
 | Brand voice file | Drive (per-business instance) | Voice rules, formatting rules, post objective rules, banned language, CTA phrasing |
 | Hook Creation Skill | Drive (portable) | Generates scored hooks for caption and image overlay |
+| Review Excerpt Selection Skill | Local (`skills/review_excerpt_selection.md`) | Selection criteria for the verbatim review excerpt used as Creatomate `Review-Text` on Social Proof posts |
 | CTA Skill | Drive (portable) | CTA phrasing patterns and rules |
 | Image Prompt — Social | Drive (portable) | Prompt template for Image 2 pipeline |
 | Image Prompt — Universal Preamble | Drive (portable) | Prepended to all image generation prompts |
@@ -70,6 +71,13 @@ The Hook Creation Skill returns multiple candidates per channel with scores and 
 Write the caption body following the brand voice rules, content type definition, and post objective rules.
 
 **Social Proof posts:** when `review_id` is set and the review was loaded in step 1, the LLM prompt includes the full `review_text` and `reviewer_first_name`. The caption should reference the review naturally — quote, paraphrase, or frame it — and use the reviewer's first name. The caption must not fabricate content beyond what the review actually says.
+
+**Review excerpt selection (Social Proof posts only):** the Drafter loads the `review_excerpt_selection` skill from `skills/review_excerpt_selection.md` and injects it into the LLM prompt alongside the full review text and the anti-fabrication rules. Before the LLM call, the Drafter looks up which Creatomate review template will render (deterministic rotation on `row_id`) and reads `max_review_text_chars` from that template's config entry under `creatomate.review_image.templates.<key>` or `creatomate.review_video.templates.<key>`; this value is passed into the prompt as the character budget. The LLM returns a `review_excerpt` field — a verbatim substring of the original review text, picked per the skill's criteria (pick the proof, not the pleasantry; favor specificity; self-contained readability). Two post-processing validations run before the excerpt is used:
+
+1. **Substring check** — the excerpt must appear exactly in `review_text`. If not, fall back to `excerpt_long` from the Reviews Sheet and log a warning.
+2. **Length check** — the excerpt must be ≤ `max_review_text_chars` for the selected template. If over, fall back to `excerpt_long` and log a warning.
+
+The validated excerpt (or the fallback) is then injected as the `Review-Text` modification when the Creatomate review template renders. The old behavior of grabbing the first N characters of the review is gone — first-N-character openers tend to capture generic pleasantries ("Great company to work with") instead of the portion that justifies the 5-star rating.
 
 **Caption structure:**
 ```
@@ -151,7 +159,7 @@ Based on the assigned `media_format`, execute the appropriate pipeline:
 #### `creatomate_review_image` (static review card from a Reviews Sheet row)
 1. Pick a template from `creatomate.review_image.templates` (deterministic rotation by `row_id`)
 2. Build modifications:
-   - `Review-Text` → `excerpt_long` (the 80-character excerpt from the Reviews Sheet)
+   - `Review-Text` → the LLM-selected `review_excerpt` validated as a verbatim substring of the original review text and ≤ the template's `max_review_text_chars` (falls back to `excerpt_long` from the Reviews Sheet on validation failure — see Step 3 above)
    - `Reviewer-Name` → `reviewer_first_name`
    - `Star-Rating` → `"★★★★★"` (Reviews Sheet only marks 5-star reviews usable)
    - `Equipment-Photo` → set ONLY when the selected template's `extra_dynamic_fields` includes `Equipment-Photo` AND a source image URL is available (currently `photo_testimonial` only)
@@ -161,11 +169,11 @@ Based on the assigned `media_format`, execute the appropriate pipeline:
 #### `creatomate_review_video` (motion review card from a Reviews Sheet row)
 1. Pick a template from `creatomate.review_video.templates`
 2. Build modifications:
-   - `Review-Text` → `excerpt_long`
+   - `Review-Text` → the LLM-selected `review_excerpt` (validated as substring + length); falls back to `excerpt_long` from the Reviews Sheet on validation failure
    - `Reviewer-Name` → `reviewer_first_name`
    - `Equipment-Photo` → set ONLY when the template's `extra_dynamic_fields` includes `Equipment-Photo` AND a source image URL is available (currently `photo_reveal` only)
 3. Call Creatomate, poll for completion, download as MP4
-4. **Fallback:** if the video render fails, fall back to `creatomate_review_image` using the same review data
+4. **Fallback:** if the video render fails, fall back to `creatomate_review_image` using the same review data and the same validated excerpt
 
 ### 7. Write Draft Rationale
 
@@ -255,6 +263,8 @@ If the Drafter fails on a single row, that row stays at `status = planned` and M
 | `catalog.reviews_sheet_id` | Reviews Sheet read by Social Proof posts to source review text + reviewer name |
 | `creatomate.review_image.templates` | Static review-card templates (Bold Quote Card, Photo Testimonial, etc.) |
 | `creatomate.review_video.templates` | Motion review-card templates (Star Cascade, Photo Reveal, etc.) |
+| `creatomate.review_image.templates.<key>.max_review_text_chars` | Per-template character budget passed to the LLM as the excerpt's hard length cap |
+| `creatomate.review_video.templates.<key>.max_review_text_chars` | Same, for review-video templates |
 
 ---
 
