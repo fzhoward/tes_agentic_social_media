@@ -14,6 +14,7 @@ degrade gracefully and continue with other tasks.
 from __future__ import annotations
 
 import base64
+import io
 import os
 import time
 from typing import Any
@@ -28,6 +29,15 @@ _TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
 _RETRY_DELAY_SECONDS = 2.0
 _IMAGE_MODEL = "gpt-image-2"
 
+# Preprocessing limits. Phone photos straight off an iPhone routinely exceed
+# the OpenAI Image API's input ceiling — the API returns a 400 with
+# "Invalid image file or mode" on oversized files. We resize + recompress to
+# stay under those limits before posting.
+_MAX_SIDE_PX = 2048
+_PRIMARY_QUALITY = 85
+_FALLBACK_QUALITY = 70
+_SIZE_BUDGET_BYTES = 4 * 1024 * 1024  # 4 MB
+
 
 def _failure(error: str) -> dict:
     return {"success": False, "output_path": "", "error": error}
@@ -39,6 +49,46 @@ def _status_code_of(exc: BaseException) -> Any:
         or getattr(exc, "http_status", None)
         or getattr(getattr(exc, "response", None), "status_code", None)
     )
+
+
+def _preprocess_for_openai(source_image_path: str) -> io.BytesIO:
+    """Resize + recompress a source image so the OpenAI Image API accepts it.
+
+    1. Convert non-RGB modes (RGBA, palette, grayscale) to RGB so the result
+       can be JPEG-encoded.
+    2. If the longest side exceeds ``_MAX_SIDE_PX``, scale the image down
+       proportionally.
+    3. Encode as JPEG at quality 85 into a BytesIO buffer.
+    4. If the encoded result exceeds ``_SIZE_BUDGET_BYTES``, re-encode at
+       quality 70.
+
+    The returned buffer is positioned at the start and has ``.name`` set so
+    the OpenAI SDK can derive the multipart filename / MIME type.
+    """
+    from PIL import Image  # local import — Pillow listed in requirements.txt
+
+    img = Image.open(source_image_path)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    longest = max(img.size)
+    if longest > _MAX_SIDE_PX:
+        scale = _MAX_SIDE_PX / longest
+        new_size = (
+            max(1, int(round(img.size[0] * scale))),
+            max(1, int(round(img.size[1] * scale))),
+        )
+        img = img.resize(new_size, Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=_PRIMARY_QUALITY, optimize=True)
+    if buf.tell() > _SIZE_BUDGET_BYTES:
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=_FALLBACK_QUALITY, optimize=True)
+
+    buf.seek(0)
+    buf.name = "source.jpg"
+    return buf
 
 
 def generate_image(
@@ -76,16 +126,24 @@ def generate_image(
             f"OpenAI client init failed: {type(exc).__name__}: {exc}"
         )
 
+    try:
+        image_buffer = _preprocess_for_openai(source_image_path)
+    except Exception as exc:
+        return _failure(
+            f"failed to preprocess source image: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
     last_error = ""
     for attempt in range(2):  # 1 initial + 1 retry
         try:
-            with open(source_image_path, "rb") as image_file:
-                response = client.images.edit(
-                    model=_IMAGE_MODEL,
-                    image=image_file,
-                    prompt=prompt,
-                    size=size,
-                )
+            image_buffer.seek(0)
+            response = client.images.edit(
+                model=_IMAGE_MODEL,
+                image=image_buffer,
+                prompt=prompt,
+                size=size,
+            )
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             if attempt == 0 and _status_code_of(exc) in _TRANSIENT_HTTP_STATUSES:
