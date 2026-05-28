@@ -183,6 +183,65 @@ def test_em_dash_hyphen_does_not_flag() -> None:
     assert critic.check_em_dash("zero-tail-swing - hyphen, en–dash") == []
 
 
+def test_check_exclamation_clean() -> None:
+    """B2 — caption with no exclamation point passes."""
+    assert critic.check_exclamation(
+        "Tight residential lot. Pick the right machine first."
+    ) == []
+
+
+def test_check_exclamation_found() -> None:
+    """B2 — caption containing `!` is flagged."""
+    failures = critic.check_exclamation("Great job on this site!")
+    assert any(f["check_id"] == "B2" for f in failures), failures
+    assert failures[0]["verdict_level"] == "soft_fail"
+
+
+def test_check_exclamation_multiple() -> None:
+    """B2 — multiple `!` chars still produce exactly one failure entry."""
+    failures = critic.check_exclamation("Wow! Amazing! Fantastic!")
+    b2 = [f for f in failures if f["check_id"] == "B2"]
+    assert len(b2) == 1, failures
+
+
+def test_check_exclamation_empty() -> None:
+    """B2 — empty string is a no-op."""
+    assert critic.check_exclamation("") == []
+
+
+def test_check_hashtags_clean() -> None:
+    """B4 — caption with no `#` passes."""
+    assert critic.check_hashtags(
+        "Compact excavator on a residential lot."
+    ) == []
+
+
+def test_check_hashtags_found() -> None:
+    """B4 — caption containing `#equipment` is flagged."""
+    failures = critic.check_hashtags("Best machine for the job #equipment")
+    assert any(f["check_id"] == "B4" for f in failures), failures
+    assert failures[0]["verdict_level"] == "soft_fail"
+
+
+def test_check_hashtags_multiple() -> None:
+    """B4 — multiple hashtags still produce exactly one failure entry."""
+    failures = critic.check_hashtags(
+        "Heavy lift today #excavator #rental #jobsite"
+    )
+    b4 = [f for f in failures if f["check_id"] == "B4"]
+    assert len(b4) == 1, failures
+
+
+def test_check_hashtags_empty() -> None:
+    """B4 — empty string is a no-op."""
+    assert critic.check_hashtags("") == []
+
+
+def test_check_hashtags_no_false_positive() -> None:
+    """B4 — bare `#` not followed by a word char does not trip the check."""
+    assert critic.check_hashtags("Number # of units delivered: 3") == []
+
+
 def test_sentence_length_splits_correctly() -> None:
     """B6 — sentences split on `.`, `!`, `?` and word count is per sentence."""
     text = (
@@ -558,6 +617,54 @@ def test_merge_llm_can_add_new_failures() -> None:
     assert any(f["check_id"] == "C1" for f in merged["failed_checks"])
 
 
+def test_merge_blocks_llm_b2_hallucination() -> None:
+    """Deterministic pass on B2 must block any LLM B2 failure entry."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "B2",
+            "category": "formatting",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "Exclamation point detected (hallucinated)",
+            "fix_instruction": "Remove the exclamation points.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=["B2"],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "B2" for f in merged["failed_checks"])
+    assert "B2" in merged["passed_checks"]
+
+
+def test_merge_blocks_llm_b4_hallucination() -> None:
+    """Deterministic pass on B4 must block any LLM B4 failure entry."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "B4",
+            "category": "formatting",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "Hashtag detected (hallucinated)",
+            "fix_instruction": "Remove all hashtags.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=["B4"],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "B4" for f in merged["failed_checks"])
+    assert "B4" in merged["passed_checks"]
+
+
 def test_merge_warnings_deduplicated() -> None:
     """Warnings from both sources merge and deduplicate by check_id."""
     det_warnings = [{
@@ -738,6 +845,69 @@ def test_evaluate_draft_hard_fail_pricing(
     )
     assert output["verdict"] == "hard_fail"
     assert any(f["check_id"] == "A1" for f in output["failed_checks"])
+
+
+def test_evaluate_draft_no_exclamation_passes_b2(
+    base_row, base_config,
+) -> None:
+    """End-to-end: clean caption (no `!`, no `#`) → final verdict has no
+    B2 or B4 in failed_checks even when the LLM hallucinates both.
+
+    This is the regression guard for the Session 19 hallucination bug.
+    """
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [
+                {
+                    "check_id": "B2",
+                    "category": "formatting",
+                    "verdict_level": "soft_fail",
+                    "location": "caption",
+                    "description": "Exclamation point detected",
+                    "fix_instruction": "Remove the exclamation points.",
+                },
+                {
+                    "check_id": "B4",
+                    "category": "formatting",
+                    "verdict_level": "soft_fail",
+                    "location": "caption",
+                    "description": "Hashtag detected",
+                    "fix_instruction": "Remove all hashtags.",
+                },
+            ],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    # Sanity: the base_row caption truly contains no `!` or `#word`.
+    assert "!" not in base_row[critic.CQ_CAPTION]
+    assert not __import__("re").search(r"#\w", base_row[critic.CQ_CAPTION])
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=None,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    failed_ids = {f["check_id"] for f in output["failed_checks"]}
+    assert "B2" not in failed_ids, output
+    assert "B4" not in failed_ids, output
+    assert "B2" in output["passed_checks"]
+    assert "B4" in output["passed_checks"]
 
 
 def test_evaluate_draft_revision_round_3_escalation(

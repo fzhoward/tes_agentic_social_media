@@ -269,7 +269,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
 # Checks the deterministic pre-check block evaluates. Other check IDs are
 # the LLM's responsibility unless overridden.
 PRE_CHECK_IDS: tuple[str, ...] = (
-    "A1", "A2", "B1", "B3", "B6", "B8", "B11",
+    "A1", "A2", "B1", "B2", "B3", "B4", "B6", "B8", "B11",
     "D1", "D5", "D6", "E2", "G3",
 )
 
@@ -457,6 +457,41 @@ def check_em_dash(caption: str) -> list[dict]:
         fix_instruction=(
             f"Replace each em dash ({EM_DASH}) with a comma, period, or "
             f"line break. Em dashes are banned in this brand voice."
+        ),
+    )]
+
+
+def check_exclamation(caption: str) -> list[dict]:
+    """B2 — no exclamation points. Returns failures list."""
+    if not caption or "!" not in caption:
+        return []
+    return [_make_failure(
+        check_id="B2",
+        location="caption",
+        description="Exclamation point detected in caption",
+        fix_instruction=(
+            "Remove all exclamation points. Replace with periods or "
+            "restructure the sentence. This brand voice does not use "
+            "exclamation points."
+        ),
+    )]
+
+
+def check_hashtags(caption: str) -> list[dict]:
+    """B4 — no hashtags. Returns failures list."""
+    if not caption:
+        return []
+    # Require # followed by a word character to avoid false-positives on bare
+    # `#` or non-hashtag uses (e.g., hex colors aren't in caption prose).
+    if not re.search(r"#\w", caption):
+        return []
+    return [_make_failure(
+        check_id="B4",
+        location="caption",
+        description="Hashtag detected in caption",
+        fix_instruction=(
+            "Remove all hashtags. This brand voice does not use hashtags "
+            "in captions."
         ),
     )]
 
@@ -826,6 +861,8 @@ def run_deterministic_checks(
     failures.extend(check_emoji(caption))
     failures.extend(check_markdown(caption))
     failures.extend(check_em_dash(caption))
+    failures.extend(check_exclamation(caption))
+    failures.extend(check_hashtags(caption))
     failures.extend(check_sentence_length(caption))
     failures.extend(check_caption_target_range(caption, platform))
     failures.extend(check_creative_hook_text(creative_hook, caption_hook))
