@@ -49,7 +49,7 @@ def _base_row(**overrides) -> dict:
         "scheduled_datetime": "2026-06-01T09:00:00+00:00",
         "caption": "Heres the right machine for tight residential lots.",
         "first_comment": "",
-        "media_url": "https://drive.google.com/uc?export=download&id=abc",
+        "media_url": "https://lh3.googleusercontent.com/d/abc",
         "media_format_used": "creatomate_text_overlay",
     }
     row.update(overrides)
@@ -305,7 +305,7 @@ def test_drive_url_conversion(config):
     )
     payload = socialbu_publish._build_payload(row, config)
     expected = (
-        "https://drive.google.com/uc?export=download"
-        "&id=1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
+        "https://lh3.googleusercontent.com/d/"
+        "1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
     )
     assert payload["image"] == expected

@@ -37,7 +37,7 @@ _HTTP_TIMEOUT = 30
 _VIDEO_KEY = "video"
 _IMAGE_KEY = "image"
 
-_DRIVE_DOWNLOAD_URL_TEMPLATE = "https://drive.google.com/uc?export=download&id={file_id}"
+_DRIVE_DOWNLOAD_URL_TEMPLATE = "https://lh3.googleusercontent.com/d/{file_id}"
 
 
 def _get_account_id(platform: str, config: Any) -> int:
@@ -112,8 +112,10 @@ def _resolve_media_url(raw: str) -> str:
     """Return a publicly fetchable URL for a Content Queue ``media_url`` value.
 
     Strings that already start with ``http`` pass through. Otherwise the
-    value is treated as a Google Drive file ID and converted to a Drive
-    download URL.
+    value is treated as a Google Drive file ID and converted to a
+    ``lh3.googleusercontent.com`` direct-serving URL. This format returns
+    raw image bytes on GET without redirects or interstitials, which is
+    required by SocialBu's media fetcher.
     """
     raw = (raw or "").strip()
     if not raw:
