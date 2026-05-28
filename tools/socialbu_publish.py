@@ -34,10 +34,7 @@ _MAX_ATTEMPTS = 3
 _BASE_DELAY_SECONDS = 1.0
 _HTTP_TIMEOUT = 30
 
-_VIDEO_KEY = "video"
-_IMAGE_KEY = "image"
-
-_DRIVE_DOWNLOAD_URL_TEMPLATE = "https://drive.google.com/uc?export=download&id={file_id}"
+_DRIVE_DOWNLOAD_URL_TEMPLATE = "https://lh3.googleusercontent.com/d/{file_id}"
 
 
 def _get_account_id(platform: str, config: Any) -> int:
@@ -112,8 +109,8 @@ def _resolve_media_url(raw: str) -> str:
     """Return a publicly fetchable URL for a Content Queue ``media_url`` value.
 
     Strings that already start with ``http`` pass through. Otherwise the
-    value is treated as a Google Drive file ID and converted to a Drive
-    download URL.
+    value is treated as a Google Drive file ID and converted to a
+    ``lh3.googleusercontent.com`` direct-content URL.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -123,33 +120,75 @@ def _resolve_media_url(raw: str) -> str:
     return _DRIVE_DOWNLOAD_URL_TEMPLATE.format(file_id=raw)
 
 
-def _media_payload_key(media_format_used: str) -> str:
-    """Return ``"video"`` for video formats, ``"image"`` otherwise."""
-    fmt = (media_format_used or "").lower()
-    return _VIDEO_KEY if "video" in fmt else _IMAGE_KEY
+def _download_media(url: str) -> tuple[bytes, str]:
+    """Download media bytes from a URL.
+
+    Returns (file_bytes, content_type).
+    Raises ValueError on failure or non-media response.
+    """
+    try:
+        resp = requests.get(url, timeout=60, allow_redirects=True)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise ValueError(f"failed to download media from {url}: {exc}") from exc
+
+    ct = resp.headers.get("Content-Type", "")
+    if not ct.startswith("image/") and not ct.startswith("video/"):
+        raise ValueError(
+            f"unexpected Content-Type from {url}: {ct!r} "
+            f"(first 50 bytes: {resp.content[:50]!r})"
+        )
+    return resp.content, ct
 
 
-def _build_payload(row: dict, config: Any) -> dict:
-    """Assemble the SocialBu POST /posts request body for a Content Queue row."""
+def _media_filename(row_id: str, content_type: str) -> str:
+    """Build a filename like 'STR-20260530-FB-01.jpg' from row_id and MIME type."""
+    ext_map = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/gif": "gif",
+        "video/mp4": "mp4",
+        "video/quicktime": "mov",
+    }
+    ext = ext_map.get(content_type, "jpg")
+    safe_id = (row_id or "media").replace("/", "_").replace("\\", "_")
+    return f"{safe_id}.{ext}"
+
+
+def _build_multipart_payload(
+    row: dict, config: Any,
+) -> tuple[dict[str, str], dict[str, tuple[str, bytes, str]]]:
+    """Build multipart/form-data fields for SocialBu POST /posts.
+
+    Returns (data_fields, files_dict).
+    - data_fields: string key-value pairs for the form body.
+    - files_dict: empty for text-only posts, or contains one entry
+      under the ``attachments`` key with (filename, bytes, mime_type).
+    """
     platform = row.get("platform", "")
     account_id = _get_account_id(platform, config)
     publish_at = _convert_scheduled_datetime(row.get("scheduled_datetime", ""))
 
-    payload: dict[str, Any] = {
+    data: dict[str, str] = {
         "content": row.get("caption", ""),
-        "accounts": [account_id],
+        "accounts[]": str(account_id),
         "publish_at": publish_at,
     }
 
     first_comment = (row.get("first_comment") or "").strip()
     if first_comment:
-        payload["first_comment"] = first_comment
+        data["first_comment"] = first_comment
+
+    files: dict[str, tuple[str, bytes, str]] = {}
 
     media_url = _resolve_media_url(row.get("media_url", ""))
     if media_url:
-        payload[_media_payload_key(row.get("media_format_used", ""))] = media_url
+        media_bytes, content_type = _download_media(media_url)
+        filename = _media_filename(row.get("row_id", ""), content_type)
+        files["attachments"] = (filename, media_bytes, content_type)
 
-    return payload
+    return data, files
 
 
 def _validate_before_publish(row: dict, config: Any) -> str | None:
@@ -178,8 +217,13 @@ def _validate_before_publish(row: dict, config: Any) -> str | None:
     return None
 
 
-def _post_to_socialbu(payload: dict, api_base_url: str) -> dict:
-    """POST a payload to SocialBu with retry on transient HTTP failures.
+def _post_to_socialbu(
+    data_fields: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]],
+    api_base_url: str,
+) -> dict:
+    """POST a multipart/form-data request to SocialBu with retry on transient
+    HTTP failures.
 
     Returns:
         ``{"success": bool, "status_code": int|None, "body": dict|None,
@@ -197,7 +241,6 @@ def _post_to_socialbu(payload: dict, api_base_url: str) -> dict:
     url = f"{api_base_url.rstrip('/')}/posts"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
@@ -209,7 +252,8 @@ def _post_to_socialbu(payload: dict, api_base_url: str) -> dict:
         try:
             resp = requests.post(
                 url,
-                json=payload,
+                data=data_fields,
+                files=files if files else None,
                 headers=headers,
                 timeout=_HTTP_TIMEOUT,
             )
@@ -321,19 +365,24 @@ def publish_row(row: dict, config: Any, *, dry_run: bool = False) -> dict:
         return result
 
     try:
-        payload = _build_payload(row, config)
+        data_fields, files = _build_multipart_payload(row, config)
     except Exception as exc:
         result["error"] = f"failed to build payload: {type(exc).__name__}: {exc}"
         return result
 
-    result["payload"] = payload
+    # Store a serializable summary for logging/tests (bytes aren't JSON-safe).
+    result["payload"] = {
+        **data_fields,
+        "has_media": bool(files),
+        "media_filename": files["attachments"][0] if files.get("attachments") else None,
+    }
 
     if dry_run:
         result["success"] = True
         return result
 
     api_base_url = config.get("publishing.api_base_url")
-    api_result = _post_to_socialbu(payload, api_base_url)
+    api_result = _post_to_socialbu(data_fields, files, api_base_url)
 
     if not api_result["success"]:
         result["error"] = api_result["error"]

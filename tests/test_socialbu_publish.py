@@ -49,7 +49,7 @@ def _base_row(**overrides) -> dict:
         "scheduled_datetime": "2026-06-01T09:00:00+00:00",
         "caption": "Heres the right machine for tight residential lots.",
         "first_comment": "",
-        "media_url": "https://drive.google.com/uc?export=download&id=abc",
+        "media_url": "https://lh3.googleusercontent.com/d/abc",
         "media_format_used": "creatomate_text_overlay",
     }
     row.update(overrides)
@@ -117,34 +117,42 @@ def test_get_account_id_unknown_platform(config):
 
 
 # ---------------------------------------------------------------------------
-# 8-11: payload assembly
+# 8-11: multipart payload assembly
 # ---------------------------------------------------------------------------
 
 def test_build_payload_facebook_with_first_comment(config):
-    row = _base_row(first_comment="Book at https://tesrents.com")
-    payload = socialbu_publish._build_payload(row, config)
-    assert payload["content"] == row["caption"]
-    assert payload["accounts"] == [173903]
-    assert payload["publish_at"] == "2026-06-01 09:00:00"
-    assert payload["first_comment"] == "Book at https://tesrents.com"
+    row = _base_row(first_comment="Book at https://tesrents.com", media_url="")
+    data, files = socialbu_publish._build_multipart_payload(row, config)
+    assert data["content"] == row["caption"]
+    assert data["accounts[]"] == "173903"
+    assert data["publish_at"] == "2026-06-01 09:00:00"
+    assert data["first_comment"] == "Book at https://tesrents.com"
+    assert files == {}
 
 
 def test_build_payload_facebook_without_first_comment(config):
-    row = _base_row(first_comment="")
-    payload = socialbu_publish._build_payload(row, config)
-    assert "first_comment" not in payload
+    row = _base_row(first_comment="", media_url="")
+    data, files = socialbu_publish._build_multipart_payload(row, config)
+    assert "first_comment" not in data
+    assert files == {}
 
 
-def test_build_payload_instagram_with_media(config):
+@patch("tools.socialbu_publish._download_media")
+def test_build_payload_instagram_with_media(mock_dl, config):
+    mock_dl.return_value = (b"fake-png-bytes", "image/png")
     row = _base_row(
         platform="instagram",
         media_url="https://example.com/photo.png",
         media_format_used="creatomate_text_overlay",
     )
-    payload = socialbu_publish._build_payload(row, config)
-    assert payload["accounts"] == [173904]
-    assert payload["image"] == "https://example.com/photo.png"
-    assert "video" not in payload
+    data, files = socialbu_publish._build_multipart_payload(row, config)
+    assert data["accounts[]"] == "173904"
+    assert "attachments" in files
+    filename, body, mime = files["attachments"]
+    assert filename == "STR-20260528-FB-01.png"
+    assert body == b"fake-png-bytes"
+    assert mime == "image/png"
+    mock_dl.assert_called_once_with("https://example.com/photo.png")
 
 
 def test_build_payload_gbp(config):
@@ -155,11 +163,10 @@ def test_build_payload_gbp(config):
         media_format_used="image2_enhanced",
     )
     # Test that account ID is correct; first_comment passes through if set
-    payload = socialbu_publish._build_payload(row, config)
-    assert payload["accounts"] == [173906]
-    # No media_url → no image/video keys
-    assert "image" not in payload
-    assert "video" not in payload
+    data, files = socialbu_publish._build_multipart_payload(row, config)
+    assert data["accounts[]"] == "173906"
+    # No media_url → empty files dict
+    assert files == {}
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +204,9 @@ def test_validate_rejects_empty_caption(config):
 # 16-19: HTTP behavior
 # ---------------------------------------------------------------------------
 
-def test_publish_success(config):
+@patch("tools.socialbu_publish._download_media")
+def test_publish_success(mock_dl, config):
+    mock_dl.return_value = (b"fake-bytes", "image/jpeg")
     row = _base_row()
     with patch("tools.socialbu_publish.requests.post") as mock_post:
         mock_post.return_value = _mock_post_response(status_code=200)
@@ -208,9 +217,20 @@ def test_publish_success(config):
     assert result["published_datetime"]  # non-empty ISO timestamp
     assert result["error"] is None
     assert mock_post.call_count == 1
+    # Verify the request was multipart, not JSON
+    _, kwargs = mock_post.call_args
+    assert "data" in kwargs
+    assert "files" in kwargs
+    assert "json" not in kwargs
+    assert kwargs["files"] is not None
+    assert "attachments" in kwargs["files"]
+    # No Content-Type header — requests sets the multipart boundary
+    assert "Content-Type" not in kwargs["headers"]
 
 
-def test_publish_422_no_retry(config):
+@patch("tools.socialbu_publish._download_media")
+def test_publish_422_no_retry(mock_dl, config):
+    mock_dl.return_value = (b"fake-bytes", "image/jpeg")
     row = _base_row()
     resp = MagicMock()
     resp.status_code = 422
@@ -227,7 +247,9 @@ def test_publish_422_no_retry(config):
     assert mock_sleep.call_count == 0
 
 
-def test_publish_500_retries(config):
+@patch("tools.socialbu_publish._download_media")
+def test_publish_500_retries(mock_dl, config):
+    mock_dl.return_value = (b"fake-bytes", "image/jpeg")
     row = _base_row()
     bad = MagicMock()
     bad.status_code = 500
@@ -244,7 +266,9 @@ def test_publish_500_retries(config):
     assert mock_post.call_count == 2
 
 
-def test_publish_401_no_retry(config):
+@patch("tools.socialbu_publish._download_media")
+def test_publish_401_no_retry(mock_dl, config):
+    mock_dl.return_value = (b"fake-bytes", "image/jpeg")
     row = _base_row()
     resp = MagicMock()
     resp.status_code = 401
@@ -265,7 +289,9 @@ def test_publish_401_no_retry(config):
 # 20: dry-run never calls API
 # ---------------------------------------------------------------------------
 
-def test_dry_run_does_not_call_api(config):
+@patch("tools.socialbu_publish._download_media")
+def test_dry_run_does_not_call_api(mock_dl, config):
+    mock_dl.return_value = (b"fake-bytes", "image/jpeg")
     row = _base_row()
     with patch("tools.socialbu_publish.requests.post") as mock_post:
         result = socialbu_publish.publish_row(row, config, dry_run=True)
@@ -274,38 +300,91 @@ def test_dry_run_does_not_call_api(config):
     assert result["socialbu_post_id"] is None
     assert result["published_datetime"] is None
     assert result["payload"]["content"] == row["caption"]
-    assert result["payload"]["accounts"] == [173903]
+    assert result["payload"]["accounts[]"] == "173903"
+    assert result["payload"]["has_media"] is True
+    assert result["payload"]["media_filename"] == "STR-20260528-FB-01.jpg"
     assert mock_post.call_count == 0
 
 
 # ---------------------------------------------------------------------------
-# 21: media key is video for video formats
+# 21: video format produces correct extension
 # ---------------------------------------------------------------------------
 
-def test_payload_video_format(config):
+@patch("tools.socialbu_publish._download_media")
+def test_payload_video_format(mock_dl, config):
+    mock_dl.return_value = (b"fake-mp4-bytes", "video/mp4")
     row = _base_row(
         platform="facebook",
         media_url="https://example.com/clip.mp4",
         media_format_used="creatomate_video",
     )
-    payload = socialbu_publish._build_payload(row, config)
-    assert payload["video"] == "https://example.com/clip.mp4"
-    assert "image" not in payload
+    data, files = socialbu_publish._build_multipart_payload(row, config)
+    assert "attachments" in files
+    filename, body, mime = files["attachments"]
+    assert filename.endswith(".mp4")
+    assert body == b"fake-mp4-bytes"
+    assert mime == "video/mp4"
 
 
 # ---------------------------------------------------------------------------
-# 22: drive ID is converted to download URL
+# 22: drive ID is converted to lh3 URL
 # ---------------------------------------------------------------------------
 
-def test_drive_url_conversion(config):
-    row = _base_row(
-        platform="facebook",
-        media_url="1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D",
-        media_format_used="image2_enhanced",
-    )
-    payload = socialbu_publish._build_payload(row, config)
-    expected = (
-        "https://drive.google.com/uc?export=download"
-        "&id=1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
-    )
-    assert payload["image"] == expected
+def test_drive_url_conversion():
+    out = socialbu_publish._resolve_media_url("1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D")
+    assert out == "https://lh3.googleusercontent.com/d/1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
+
+
+# ---------------------------------------------------------------------------
+# 23-25: _download_media
+# ---------------------------------------------------------------------------
+
+def test_download_media_success():
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"Content-Type": "image/jpeg"}
+    resp.content = b"fake-jpeg-bytes"
+    resp.raise_for_status = MagicMock()
+    with patch("tools.socialbu_publish.requests.get") as mock_get:
+        mock_get.return_value = resp
+        body, ct = socialbu_publish._download_media("https://example.com/x.jpg")
+    assert body == b"fake-jpeg-bytes"
+    assert ct == "image/jpeg"
+
+
+def test_download_media_failure():
+    import requests as _requests
+    with patch("tools.socialbu_publish.requests.get") as mock_get:
+        mock_get.side_effect = _requests.RequestException("boom")
+        with pytest.raises(ValueError) as exc:
+            socialbu_publish._download_media("https://example.com/x.jpg")
+    assert "failed to download" in str(exc.value)
+
+
+def test_download_media_wrong_content_type():
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"Content-Type": "text/html"}
+    resp.content = b"<html><body>not an image</body></html>"
+    resp.raise_for_status = MagicMock()
+    with patch("tools.socialbu_publish.requests.get") as mock_get:
+        mock_get.return_value = resp
+        with pytest.raises(ValueError) as exc:
+            socialbu_publish._download_media("https://example.com/x.jpg")
+    assert "unexpected Content-Type" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# 26-28: _media_filename
+# ---------------------------------------------------------------------------
+
+def test_media_filename_jpeg():
+    assert socialbu_publish._media_filename("STR-001", "image/jpeg") == "STR-001.jpg"
+
+
+def test_media_filename_png():
+    assert socialbu_publish._media_filename("STR-001", "image/png") == "STR-001.png"
+
+
+def test_media_filename_unknown():
+    assert socialbu_publish._media_filename("STR-001", "application/octet-stream") == "STR-001.jpg"
