@@ -49,7 +49,7 @@ def _base_row(**overrides) -> dict:
         "scheduled_datetime": "2026-06-01T09:00:00+00:00",
         "caption": "Heres the right machine for tight residential lots.",
         "first_comment": "",
-        "media_url": "https://lh3.googleusercontent.com/d/abc",
+        "media_url": "https://drive.google.com/uc?export=download&id=abc",
         "media_format_used": "creatomate_text_overlay",
     }
     row.update(overrides)
@@ -143,8 +143,7 @@ def test_build_payload_instagram_with_media(config):
     )
     payload = socialbu_publish._build_payload(row, config)
     assert payload["accounts"] == [173904]
-    assert payload["media"] == [{"url": "https://example.com/photo.png"}]
-    assert "image" not in payload
+    assert payload["image"] == "https://example.com/photo.png"
     assert "video" not in payload
 
 
@@ -158,8 +157,9 @@ def test_build_payload_gbp(config):
     # Test that account ID is correct; first_comment passes through if set
     payload = socialbu_publish._build_payload(row, config)
     assert payload["accounts"] == [173906]
-    # No media_url → no media key
-    assert "media" not in payload
+    # No media_url → no image/video keys
+    assert "image" not in payload
+    assert "video" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ def test_dry_run_does_not_call_api(config):
 
 
 # ---------------------------------------------------------------------------
-# 21: video URL is attached under the unified media key
+# 21: media key is video for video formats
 # ---------------------------------------------------------------------------
 
 def test_payload_video_format(config):
@@ -289,9 +289,8 @@ def test_payload_video_format(config):
         media_format_used="creatomate_video",
     )
     payload = socialbu_publish._build_payload(row, config)
-    assert payload["media"] == [{"url": "https://example.com/clip.mp4"}]
+    assert payload["video"] == "https://example.com/clip.mp4"
     assert "image" not in payload
-    assert "video" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +305,7 @@ def test_drive_url_conversion(config):
     )
     payload = socialbu_publish._build_payload(row, config)
     expected = (
-        "https://lh3.googleusercontent.com/d/"
-        "1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
+        "https://drive.google.com/uc?export=download"
+        "&id=1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
     )
-    assert payload["media"] == [{"url": expected}]
+    assert payload["image"] == expected
