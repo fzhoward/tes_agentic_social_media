@@ -422,6 +422,12 @@ def _cli() -> int:
         default=None,
         help="post a card for a single row only (default: all pending)",
     )
+    parser.add_argument(
+        "--reschedule",
+        action="store_true",
+        help="scan for overdue awaiting_approval rows, slide each +24h, "
+             "and auto-reject after the configured miss limit",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -432,6 +438,11 @@ def _cli() -> int:
     from tools.config_loader import load_config
 
     config = load_config(config_path)
+
+    if args.reschedule:
+        results = reschedule_missed_approvals(config, dry_run=args.dry_run)
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        return 0
 
     if args.row_id:
         sheet_id = config.get("drive.content_queue_sheet_id")

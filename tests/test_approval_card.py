@@ -281,3 +281,100 @@ def test_duplicate_card_prevention(monkeypatch):
     assert response.get("skipped") is True
     assert response.get("ok") is False
     assert len(post_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# 9-11: CLI --reschedule flag
+# ---------------------------------------------------------------------------
+
+def test_cli_reschedule_dry_run(monkeypatch, capsys):
+    config = _make_config()
+    monkeypatch.setattr(
+        "tools.config_loader.load_config", lambda path=None: config,
+    )
+
+    captured = {}
+
+    def fake_reschedule(cfg, *, dry_run=False):
+        captured["config"] = cfg
+        captured["dry_run"] = dry_run
+        return [{"row_id": "STR-1", "action": "reschedule", "dry_run": True}]
+
+    monkeypatch.setattr(
+        approval_card, "reschedule_missed_approvals", fake_reschedule,
+    )
+
+    monkeypatch.setattr(sys, "argv", ["approval_card", "--reschedule", "--dry-run"])
+
+    rc = approval_card._cli()
+
+    assert rc == 0
+    assert captured["dry_run"] is True
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert parsed == [{"row_id": "STR-1", "action": "reschedule", "dry_run": True}]
+
+
+def test_cli_reschedule_not_dry_run(monkeypatch, capsys):
+    config = _make_config()
+    monkeypatch.setattr(
+        "tools.config_loader.load_config", lambda path=None: config,
+    )
+
+    captured = {}
+
+    def fake_reschedule(cfg, *, dry_run=False):
+        captured["dry_run"] = dry_run
+        return []
+
+    monkeypatch.setattr(
+        approval_card, "reschedule_missed_approvals", fake_reschedule,
+    )
+
+    monkeypatch.setattr(sys, "argv", ["approval_card", "--reschedule"])
+
+    rc = approval_card._cli()
+
+    assert rc == 0
+    assert captured["dry_run"] is False
+    capsys.readouterr()  # drain output
+
+
+def test_cli_default_path_unchanged(monkeypatch, capsys):
+    """Regression: invoking with neither --reschedule nor --row-id calls
+    post_pending_approvals."""
+    config = _make_config()
+    monkeypatch.setattr(
+        "tools.config_loader.load_config", lambda path=None: config,
+    )
+
+    reschedule_calls = []
+
+    def fake_reschedule(cfg, *, dry_run=False):
+        reschedule_calls.append(dry_run)
+        return []
+
+    monkeypatch.setattr(
+        approval_card, "reschedule_missed_approvals", fake_reschedule,
+    )
+
+    captured = {}
+
+    def fake_post_pending(cfg, *, dry_run=False):
+        captured["dry_run"] = dry_run
+        return [{"row_id": "STR-X", "ok": True, "ts": "1.0"}]
+
+    monkeypatch.setattr(
+        approval_card, "post_pending_approvals", fake_post_pending,
+    )
+
+    monkeypatch.setattr(sys, "argv", ["approval_card", "--dry-run"])
+
+    rc = approval_card._cli()
+
+    assert rc == 0
+    assert captured["dry_run"] is True
+    assert reschedule_calls == []  # reschedule path NOT taken
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert parsed == [{"row_id": "STR-X", "ok": True, "ts": "1.0"}]
