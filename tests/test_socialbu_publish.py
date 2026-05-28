@@ -143,7 +143,8 @@ def test_build_payload_instagram_with_media(config):
     )
     payload = socialbu_publish._build_payload(row, config)
     assert payload["accounts"] == [173904]
-    assert payload["image"] == "https://example.com/photo.png"
+    assert payload["media"] == [{"url": "https://example.com/photo.png"}]
+    assert "image" not in payload
     assert "video" not in payload
 
 
@@ -157,9 +158,8 @@ def test_build_payload_gbp(config):
     # Test that account ID is correct; first_comment passes through if set
     payload = socialbu_publish._build_payload(row, config)
     assert payload["accounts"] == [173906]
-    # No media_url → no image/video keys
-    assert "image" not in payload
-    assert "video" not in payload
+    # No media_url → no media key
+    assert "media" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ def test_dry_run_does_not_call_api(config):
 
 
 # ---------------------------------------------------------------------------
-# 21: media key is video for video formats
+# 21: video URL is attached under the unified media key
 # ---------------------------------------------------------------------------
 
 def test_payload_video_format(config):
@@ -289,8 +289,9 @@ def test_payload_video_format(config):
         media_format_used="creatomate_video",
     )
     payload = socialbu_publish._build_payload(row, config)
-    assert payload["video"] == "https://example.com/clip.mp4"
+    assert payload["media"] == [{"url": "https://example.com/clip.mp4"}]
     assert "image" not in payload
+    assert "video" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -308,4 +309,4 @@ def test_drive_url_conversion(config):
         "https://lh3.googleusercontent.com/d/"
         "1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
     )
-    assert payload["image"] == expected
+    assert payload["media"] == [{"url": expected}]

@@ -34,9 +34,6 @@ _MAX_ATTEMPTS = 3
 _BASE_DELAY_SECONDS = 1.0
 _HTTP_TIMEOUT = 30
 
-_VIDEO_KEY = "video"
-_IMAGE_KEY = "image"
-
 _DRIVE_DOWNLOAD_URL_TEMPLATE = "https://lh3.googleusercontent.com/d/{file_id}"
 
 
@@ -125,12 +122,6 @@ def _resolve_media_url(raw: str) -> str:
     return _DRIVE_DOWNLOAD_URL_TEMPLATE.format(file_id=raw)
 
 
-def _media_payload_key(media_format_used: str) -> str:
-    """Return ``"video"`` for video formats, ``"image"`` otherwise."""
-    fmt = (media_format_used or "").lower()
-    return _VIDEO_KEY if "video" in fmt else _IMAGE_KEY
-
-
 def _build_payload(row: dict, config: Any) -> dict:
     """Assemble the SocialBu POST /posts request body for a Content Queue row."""
     platform = row.get("platform", "")
@@ -149,7 +140,7 @@ def _build_payload(row: dict, config: Any) -> dict:
 
     media_url = _resolve_media_url(row.get("media_url", ""))
     if media_url:
-        payload[_media_payload_key(row.get("media_format_used", ""))] = media_url
+        payload["media"] = [{"url": media_url}]
 
     return payload
 
