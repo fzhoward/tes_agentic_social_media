@@ -60,11 +60,11 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 | B2 | **No exclamation points.** | Brand voice: Formatting Tone Defaults |
 | B3 | **No em dashes.** | Brand voice: Formatting Tone Defaults |
 | B4 | **No hashtags** (unless the brand voice explicitly allows them for the target platform). | Brand voice: Hashtag Policy |
-| B5 | **Vertical stack formatting.** Every content line must be followed by a blank line. No dense paragraphs. | Brand voice: Caption Formatting |
+| B5 | **Vertical stack formatting.** Every content line must be followed by a blank line. No dense paragraphs. *Deterministic pre-check.* | Brand voice: Caption Formatting |
 | B6 | **Sentence length.** No sentence exceeds 18 words. Median sentence length should be 8-12 words. | Brand voice: Caption Formatting |
-| B7 | **Fragment lines.** At least 2 fragment lines (5 words or fewer) per post for pacing. | Brand voice: Caption Formatting |
+| B7 | **Fragment lines.** At least 2 fragment lines (5 words or fewer) per post for pacing. *Deterministic pre-check.* | Brand voice: Caption Formatting |
 | B8 | **Word count in range.** Caption body (excluding hook) must fall within the target range for the post type and platform. | Brand voice: Word Count Targets |
-| B9 | **No competing hook.** The caption body must not include its own opening hook. The body starts with the first line of content, assuming a hook will be prepended by the system. | Brand voice: Hook Handling |
+| B9 | **No repeated hook.** The opening line (hook) must appear exactly once and must not be repeated later in the caption. *Deterministic pre-check.* | Brand voice: Hook Handling |
 | B10 | **Reading level.** Content should target 6th-7th grade Flesch-Kincaid reading level. | Brand voice: Caption Formatting |
 | B11 | **Creative hook text ≤ 7 words.** The `creative_hook_text` field must contain no more than 7 words. Distinct from `caption_hook` — neither string may be a case-insensitive substring of the other. | Drafter SOP: Creative Hook Text Rules |
 

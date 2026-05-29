@@ -273,7 +273,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
 # Checks the deterministic pre-check block evaluates. Other check IDs are
 # the LLM's responsibility unless overridden.
 PRE_CHECK_IDS: tuple[str, ...] = (
-    "A1", "A2", "B1", "B2", "B3", "B4", "B6", "B8", "B11",
+    "A1", "A2", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B11",
     "D1", "D5", "D6", "E2", "G3",
 )
 
@@ -300,6 +300,25 @@ def _split_sentences(text: str) -> list[str]:
         return []
     raw = SENTENCE_SPLIT_RE.split(text)
     return [s.strip() for s in raw if s and s.strip()]
+
+
+def _content_lines(caption: str) -> list[str]:
+    """Non-empty lines of the caption, stripped. Used by line-structure
+    checks (B5/B7/B9). Splits on newlines, NOT sentence punctuation.
+    Normalizes CRLF/CR to LF first so stored line endings do not matter."""
+    if not caption:
+        return []
+    normalized = caption.replace("\r\n", "\n").replace("\r", "\n")
+    return [ln.strip() for ln in normalized.split("\n") if ln.strip()]
+
+
+def _normalize_for_match(text: str) -> str:
+    """Lowercase, strip surrounding/trailing punctuation and collapse
+    whitespace, for hook-duplication comparison."""
+    t = (text or "").lower().strip()
+    t = re.sub(r"[^\w\s]", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
 
 
 def _make_failure(
@@ -463,6 +482,93 @@ def check_em_dash(caption: str) -> list[dict]:
             f"line break. Em dashes are banned in this brand voice."
         ),
     )]
+
+
+def check_vertical_stack(caption: str) -> list[dict]:
+    """B5 — vertical-stack formatting. Every content line must be followed
+    by a blank line; no two non-empty lines directly adjacent.
+
+    Deterministic so the LLM cannot flag dense-paragraph hallucinations on a
+    properly stacked caption.
+    """
+    if not caption or not caption.strip():
+        return []
+    normalized = caption.replace("\r\n", "\n").replace("\r", "\n")
+    raw = normalized.split("\n")
+    for i in range(len(raw) - 1):
+        if raw[i].strip() and raw[i + 1].strip():
+            return [{
+                "check_id": "B5",
+                "category": CATEGORY_BY_CHECK.get("B5", "formatting"),
+                "verdict_level": VERDICT_LEVEL_BY_CHECK.get("B5", "soft_fail"),
+                "location": f"lines {i + 1}-{i + 2}",
+                "description": (
+                    "Two content lines are not separated by a blank line "
+                    "(dense paragraph). Use vertical-stack formatting."
+                ),
+                "fix_instruction": (
+                    "Separate every content line with a blank line."
+                ),
+            }]
+    return []
+
+
+def check_fragment_lines(caption: str) -> list[dict]:
+    """B7 — at least 2 fragment lines (<=5 words) for pacing.
+
+    Deterministic so the LLM cannot misjudge fragment density.
+    """
+    lines = _content_lines(caption)
+    if not lines:
+        return []
+    fragment_count = sum(1 for ln in lines if _count_words(ln) <= 5)
+    if fragment_count >= 2:
+        return []
+    return [{
+        "check_id": "B7",
+        "category": CATEGORY_BY_CHECK.get("B7", "formatting"),
+        "verdict_level": VERDICT_LEVEL_BY_CHECK.get("B7", "soft_fail"),
+        "location": "caption body",
+        "description": (
+            f"Only {fragment_count} fragment line(s) (<=5 words); "
+            f"at least 2 required for pacing."
+        ),
+        "fix_instruction": (
+            "Add short fragment lines (5 words or fewer) for pacing."
+        ),
+    }]
+
+
+def check_hook_duplication(caption: str) -> list[dict]:
+    """B9 — the opening hook line must not be repeated later in the caption.
+
+    Redefined from the original "body must not include its own hook"
+    formulation because hook/body are merged into a single ``caption`` value
+    by ``assemble_caption`` and no body-only field is persisted. The concrete
+    defect this guards against is the assembled caption repeating its hook.
+    """
+    lines = _content_lines(caption)
+    if len(lines) < 2:
+        return []
+    first = _normalize_for_match(lines[0])
+    if not first:
+        return []
+    for idx, ln in enumerate(lines[1:], start=2):
+        if _normalize_for_match(ln) == first:
+            return [{
+                "check_id": "B9",
+                "category": CATEGORY_BY_CHECK.get("B9", "formatting"),
+                "verdict_level": VERDICT_LEVEL_BY_CHECK.get("B9", "soft_fail"),
+                "location": f"line {idx}",
+                "description": (
+                    "The opening hook line is repeated later in the caption."
+                ),
+                "fix_instruction": (
+                    "Remove the duplicated hook; the hook should appear once "
+                    "as the opening line only."
+                ),
+            }]
+    return []
 
 
 def check_exclamation(caption: str) -> list[dict]:
@@ -883,6 +989,9 @@ def run_deterministic_checks(
     failures.extend(check_em_dash(caption))
     failures.extend(check_exclamation(caption))
     failures.extend(check_hashtags(caption))
+    failures.extend(check_vertical_stack(caption))
+    failures.extend(check_fragment_lines(caption))
+    failures.extend(check_hook_duplication(caption))
     failures.extend(check_sentence_length(caption))
     failures.extend(check_caption_target_range(caption, platform))
     failures.extend(check_creative_hook_text(creative_hook, caption_hook))
@@ -1077,9 +1186,10 @@ def build_critic_messages(
         "been evaluated by code. Trust them. Do NOT re-evaluate the same "
         "checks unless you have strong evidence the code missed something. "
         "In particular, exclamation points (B2), hashtags (B4), emoji (A2), "
-        "em dashes (B3), markdown (B1), and pricing (A1) are character-level "
-        "checks decided by code — never flag these yourself; defer entirely "
-        "to the pre-check block. "
+        "em dashes (B3), markdown (B1), pricing (A1), vertical-stack "
+        "formatting (B5), fragment-line count (B7), and hook duplication "
+        "(B9) are line- or character-level checks decided by code — never "
+        "flag these yourself; defer entirely to the pre-check block. "
         "Focus your judgment on the checks that require reading "
         "comprehension (C1-C7, F1-F4, G1) and any voice/content issues.\n"
         "5. Catalog cross-reference: if a catalog record is provided, every "

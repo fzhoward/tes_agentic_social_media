@@ -263,6 +263,176 @@ def test_check_hashtags_description_lists_matches() -> None:
     assert "#TES" in desc
 
 
+# --- B5 / B7 / B9 deterministic line-structure tests ---
+
+REAL_STR_20260531_CAPTION = (
+    "Bigger excavator does not always mean a faster job.\n\n"
+    "Most people default to the largest machine they think they can "
+    "afford.\n\n"
+    "That logic works against you more often than it helps.\n\n"
+    "Here is how to actually think through the decision.\n\n"
+    "Start with access, not power.\n\n"
+    "Residential lots in North Florida are tight.\n\n"
+    "Narrow gates, fences, soft grass, and close utility lines are the "
+    "real constraints.\n\n"
+    "A machine that cannot reach the dig area is useless at any size.\n\n"
+    "Next, match the machine to the actual dig depth.\n\n"
+    "Most residential drainage, footer, and utility work does not require "
+    "a large excavator.\n\n"
+    "A compact machine with the right dig depth handles the job cleanly."
+    "\n\n"
+    "Transport matters too.\n\n"
+    "A larger machine may require a bigger trailer or a separate haul."
+    "\n\n"
+    "That adds time, cost, and coordination before you ever break "
+    "ground.\n\n"
+    "The sweet spot is the smallest machine that meets your depth "
+    "requirement and fits your site.\n\n"
+    "Not the biggest one that will fit on the truck.\n\n"
+    "Getting this right reduces rental time, protects your site, and "
+    "avoids access problems mid-job.\n\n"
+    "Save this for when you are planning your next dig."
+)
+
+
+def test_check_vertical_stack_clean_passes() -> None:
+    """B5 — every content line followed by a blank line passes."""
+    caption = "Line one.\n\nLine two.\n\nLine three."
+    assert critic.check_vertical_stack(caption) == []
+
+
+def test_check_vertical_stack_adjacent_lines_fails() -> None:
+    """B5 — two content lines directly adjacent fails."""
+    caption = "Line one.\nLine two without blank.\n\nLine three."
+    failures = critic.check_vertical_stack(caption)
+    assert any(f["check_id"] == "B5" for f in failures), failures
+    assert failures[0]["verdict_level"] == "soft_fail"
+
+
+def test_check_vertical_stack_handles_crlf() -> None:
+    """B5 — CRLF line endings are normalized; properly stacked still passes."""
+    caption = "Line one.\r\n\r\nLine two.\r\n\r\nLine three."
+    assert critic.check_vertical_stack(caption) == []
+
+
+def test_check_vertical_stack_empty_no_op() -> None:
+    """B5 — empty caption is a no-op."""
+    assert critic.check_vertical_stack("") == []
+    assert critic.check_vertical_stack("   \n\n  ") == []
+
+
+def test_check_vertical_stack_real_caption_passes() -> None:
+    """B5 — the real STR-20260531-FB-01 caption passes."""
+    assert critic.check_vertical_stack(REAL_STR_20260531_CAPTION) == []
+
+
+def test_check_fragment_lines_two_fragments_passes() -> None:
+    """B7 — caption with two short lines passes."""
+    caption = (
+        "Stop overbuying.\n\n"
+        "Pick the right machine for the site you actually have, "
+        "not the biggest one you can fit on a trailer.\n\n"
+        "Access first.\n\n"
+        "Depth second."
+    )
+    assert critic.check_fragment_lines(caption) == []
+
+
+def test_check_fragment_lines_zero_fragments_fails() -> None:
+    """B7 — caption with no short lines fails."""
+    caption = (
+        "Renting a compact excavator on a tight residential lot "
+        "saves you both time and headache.\n\n"
+        "Operators clear the site quickly and finish the dig without "
+        "tearing up the lawn or denting the fence."
+    )
+    failures = critic.check_fragment_lines(caption)
+    assert any(f["check_id"] == "B7" for f in failures), failures
+    assert failures[0]["verdict_level"] == "soft_fail"
+
+
+def test_check_fragment_lines_one_fragment_fails() -> None:
+    """B7 — exactly one fragment line is not enough; fails."""
+    caption = (
+        "Access first.\n\n"
+        "Renting a compact excavator on a tight residential lot "
+        "saves you both time and headache."
+    )
+    failures = critic.check_fragment_lines(caption)
+    assert any(f["check_id"] == "B7" for f in failures), failures
+    assert "1 fragment line" in failures[0]["description"]
+
+
+def test_check_fragment_lines_real_caption_passes() -> None:
+    """B7 — the real STR-20260531-FB-01 caption has >=2 fragment lines."""
+    assert critic.check_fragment_lines(REAL_STR_20260531_CAPTION) == []
+
+
+def test_check_fragment_lines_empty_no_op() -> None:
+    """B7 — empty caption is a no-op."""
+    assert critic.check_fragment_lines("") == []
+
+
+def test_check_hook_duplication_unique_opening_passes() -> None:
+    """B9 — unique opening line passes."""
+    caption = "Tight lot, big problem.\n\nPick the right machine first.\n\nSave this."
+    assert critic.check_hook_duplication(caption) == []
+
+
+def test_check_hook_duplication_repeated_opening_fails() -> None:
+    """B9 — the opening line repeated later fails."""
+    caption = (
+        "Tight lot, big problem.\n\n"
+        "Pick the right machine first.\n\n"
+        "Tight lot, big problem.\n\n"
+        "Save this."
+    )
+    failures = critic.check_hook_duplication(caption)
+    assert any(f["check_id"] == "B9" for f in failures), failures
+    assert failures[0]["verdict_level"] == "soft_fail"
+
+
+def test_check_hook_duplication_punctuation_insensitive() -> None:
+    """B9 — punctuation/case differences still count as duplication."""
+    caption = (
+        "Tight lot, big problem!\n\n"
+        "Pick the right machine first.\n\n"
+        "tight lot big problem\n\n"
+        "Save this."
+    )
+    failures = critic.check_hook_duplication(caption)
+    assert any(f["check_id"] == "B9" for f in failures), failures
+
+
+def test_check_hook_duplication_single_line_no_op() -> None:
+    """B9 — fewer than two content lines is a no-op."""
+    assert critic.check_hook_duplication("Only one line.") == []
+    assert critic.check_hook_duplication("") == []
+
+
+def test_check_hook_duplication_real_caption_passes() -> None:
+    """B9 — the real STR-20260531-FB-01 caption has a unique opening line."""
+    assert critic.check_hook_duplication(REAL_STR_20260531_CAPTION) == []
+
+
+def test_run_deterministic_real_caption_passes_b5_b7_b9(
+    base_row, base_config,
+) -> None:
+    """End-to-end: the real STR-20260531-FB-01 caption produces no B5/B7/B9
+    failures and the IDs land in passed_checks."""
+    base_row[critic.CQ_CAPTION] = REAL_STR_20260531_CAPTION
+    failures, passed, _ = critic.run_deterministic_checks(
+        row=base_row, catalog_item=None, config=base_config,
+    )
+    failed_ids = {f["check_id"] for f in failures}
+    assert "B5" not in failed_ids, failures
+    assert "B7" not in failed_ids, failures
+    assert "B9" not in failed_ids, failures
+    assert "B5" in passed
+    assert "B7" in passed
+    assert "B9" in passed
+
+
 def test_sentence_length_splits_correctly() -> None:
     """B6 — sentences split on `.`, `!`, `?` and word count is per sentence."""
     text = (
@@ -684,6 +854,78 @@ def test_merge_blocks_llm_b4_hallucination() -> None:
     )
     assert not any(f["check_id"] == "B4" for f in merged["failed_checks"])
     assert "B4" in merged["passed_checks"]
+
+
+def test_merge_blocks_llm_b5_hallucination() -> None:
+    """Deterministic pass on B5 must block any LLM B5 failure entry."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "B5",
+            "category": "formatting",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "Dense paragraph detected (hallucinated)",
+            "fix_instruction": "Add blank lines between content lines.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=["B5"],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "B5" for f in merged["failed_checks"])
+    assert "B5" in merged["passed_checks"]
+
+
+def test_merge_blocks_llm_b7_hallucination() -> None:
+    """Deterministic pass on B7 must block any LLM B7 failure entry."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "B7",
+            "category": "formatting",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "No fragment lines (hallucinated)",
+            "fix_instruction": "Add short fragment lines.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=["B7"],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "B7" for f in merged["failed_checks"])
+    assert "B7" in merged["passed_checks"]
+
+
+def test_merge_blocks_llm_b9_hallucination() -> None:
+    """Deterministic pass on B9 must block any LLM B9 failure entry."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "B9",
+            "category": "formatting",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "Caption opens with its own hook (hallucinated)",
+            "fix_instruction": "Remove the duplicated hook.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=["B9"],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "B9" for f in merged["failed_checks"])
+    assert "B9" in merged["passed_checks"]
 
 
 def test_merge_warnings_deduplicated() -> None:

@@ -60,9 +60,14 @@ Run the mechanical checks in Python before calling the LLM. These are faster, ch
 | A1 (pricing) | Regex scan for `$`, dollar amounts, and the banned pricing-word list ("affordable", "competitive", "budget-friendly", "cheap", "cheapest") |
 | A2 (emoji) | Regex scan for emoji unicode ranges |
 | B1 (markdown) | Regex scan for `**…**`, `*…*`, leading `#`, leading `- ` |
+| B2 (exclamation) | Scan for `!` characters |
 | B3 (em dash) | Scan for `—` (U+2014) |
+| B4 (hashtags) | Scan for `#` followed by a word character |
+| B5 (vertical stack) | Detect any two non-empty content lines directly adjacent (no blank line between) |
 | B6 (sentence length) | Split caption on `.` `!` `?`, count words per sentence, flag any sentence > 18 words |
+| B7 (fragment lines) | Count content lines ≤ 5 words; flag if fewer than 2 |
 | B8 (word count) | Count caption body words, check against platform/content-type target ranges |
+| B9 (hook duplication) | Detect the opening line (normalized lowercased, no punctuation) repeating later in the caption |
 | B11 (creative_hook_text) | Word count ≤ 7; distinct from caption_hook (no substring overlap either way) |
 | D1 (caption length) | Character count against platform limits (FB: 63,206; IG: 2,200; GBP: 1,500) |
 | D5 (GBP button type) | If platform is GBP and a button is specified, must be one of CALL/LEARN_MORE/BOOK/ORDER/GET_DIRECTIONS/SIGN_UP |
@@ -170,7 +175,7 @@ If the Critic fails to run, the draft stays at `status = drafted`. Make.com retr
 
 - **Does not evaluate image quality.** The Critic reviews the caption, CTA, formatting, and factual claims. Image quality is the owner's judgment at the Slack approval step.
 - **Does not rewrite content.** The Critic provides fix instructions. The Drafter applies them.
-- **Does not evaluate hooks.** Hook quality is governed by the Hook Creation Skill's scoring rubric. The Critic checks only that a hook exists, that the caption body does not compete with it (B9), and that `creative_hook_text` meets its constraints (B11).
+- **Does not evaluate hooks.** Hook quality is governed by the Hook Creation Skill's scoring rubric. The Critic checks only that a hook exists, that the opening hook line is not repeated later in the caption (B9), and that `creative_hook_text` meets its constraints (B11).
 - **Does not check media format.** Whether the Strategist's media format assignment was correct is not a Critic concern.
 - **Does not call the Drafter.** Routing on `soft_fail` is Make.com's responsibility.
 
