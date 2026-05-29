@@ -260,7 +260,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
     "B10": "soft_fail", "B11": "soft_fail",
     "C1": "soft_fail", "C2": "soft_fail", "C3": "soft_fail",
     "C4": "soft_fail", "C5": "soft_fail", "C6": "soft_fail",
-    "C7": "soft_fail",
+    "C7": "warning",
     "D1": "soft_fail", "D2": "soft_fail", "D3": "soft_fail",
     "D4": "soft_fail", "D5": "soft_fail", "D6": "soft_fail",
     "E1": "soft_fail", "E2": "soft_fail", "E3": "soft_fail",
@@ -1354,7 +1354,11 @@ def merge_results(
     merged_failures: list[dict] = list(deterministic_failures)
 
     # Add LLM failures only for check IDs not already in deterministic_failures.
+    # Warning-tier check IDs (e.g. C7) are routed to warnings instead of
+    # failed_checks so they surface on the approval card but never gate the
+    # verdict.
     llm_failures = llm_result.get("failed_checks", []) or []
+    llm_warnings_from_failures: list[dict] = []
     for llm_fail in llm_failures:
         if not isinstance(llm_fail, dict):
             continue
@@ -1365,6 +1369,16 @@ def merge_results(
         # trust the code.
         if check_id in det_passed_ids:
             continue
+        resolved_level = str(
+            llm_fail.get("verdict_level")
+            or VERDICT_LEVEL_BY_CHECK.get(check_id, "soft_fail")
+        )
+        if resolved_level == "warning":
+            llm_warnings_from_failures.append({
+                "check_id": check_id,
+                "description": str(llm_fail.get("description", "") or ""),
+            })
+            continue
         # Normalize the entry shape.
         merged_failures.append({
             "check_id": check_id,
@@ -1372,28 +1386,40 @@ def merge_results(
                 llm_fail.get("category")
                 or CATEGORY_BY_CHECK.get(check_id, "unknown")
             ),
-            "verdict_level": str(
-                llm_fail.get("verdict_level")
-                or VERDICT_LEVEL_BY_CHECK.get(check_id, "soft_fail")
-            ),
+            "verdict_level": resolved_level,
             "location": str(llm_fail.get("location", "") or ""),
             "description": str(llm_fail.get("description", "") or ""),
             "fix_instruction": str(llm_fail.get("fix_instruction", "") or ""),
         })
 
     merged_failed_ids = {f["check_id"] for f in merged_failures}
+    llm_routed_warning_ids = {
+        w["check_id"] for w in llm_warnings_from_failures
+    }
 
-    # Passed checks = union of deterministic + LLM, minus anything in failures.
+    # Passed checks = union of deterministic + LLM, minus anything in failures
+    # or routed to warnings.
     llm_passed = llm_result.get("passed_checks", []) or []
-    passed_ids: set[str] = set(deterministic_passed)
+    passed_ids: set[str] = set(deterministic_passed) - llm_routed_warning_ids
     for cid in llm_passed:
-        if isinstance(cid, str) and cid not in merged_failed_ids:
+        if (
+            isinstance(cid, str)
+            and cid not in merged_failed_ids
+            and cid not in llm_routed_warning_ids
+        ):
             passed_ids.add(cid)
 
-    # Warnings — concat deterministic + LLM, dedupe by check_id.
+    # Warnings — concat deterministic + LLM-flagged warning-tier failures +
+    # LLM warnings, dedupe by check_id. Deterministic warnings win on dupes,
+    # then LLM-routed-from-failures, then LLM-declared warnings (first-write-
+    # wins via seen_warning_ids).
     seen_warning_ids: set[str] = set()
     merged_warnings: list[dict] = []
-    for w in deterministic_warnings + (llm_result.get("warnings", []) or []):
+    for w in (
+        deterministic_warnings
+        + llm_warnings_from_failures
+        + (llm_result.get("warnings", []) or [])
+    ):
         if not isinstance(w, dict):
             continue
         wid = str(w.get("check_id", "")).strip()

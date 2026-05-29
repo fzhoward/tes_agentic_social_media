@@ -928,6 +928,82 @@ def test_merge_blocks_llm_b9_hallucination() -> None:
     assert "B9" in merged["passed_checks"]
 
 
+def test_merge_routes_warning_tier_to_warnings() -> None:
+    """LLM failed_checks entry with verdict_level=warning routes to warnings,
+    not failed_checks, and does not gate the verdict."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C7",
+            "category": "content_voice",
+            "verdict_level": "warning",
+            "location": "caption",
+            "description": "Voice could be more direct",
+            "fix_instruction": "Simplify the language.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "C7" for f in merged["failed_checks"])
+    warning_ids = [w["check_id"] for w in merged["warnings"]]
+    assert "C7" in warning_ids
+    # The warning entry should carry the original description.
+    c7 = next(w for w in merged["warnings"] if w["check_id"] == "C7")
+    assert "Voice could be more direct" in c7["description"]
+
+
+def test_merge_routes_warning_tier_via_registry_lookup() -> None:
+    """If LLM omits verdict_level on C7, the warning tier is resolved from
+    VERDICT_LEVEL_BY_CHECK and the entry still routes to warnings."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C7",
+            "location": "caption",
+            "description": "Marketing-agency cadence detected",
+            "fix_instruction": "Remove hype language.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "C7" for f in merged["failed_checks"])
+    assert any(w["check_id"] == "C7" for w in merged["warnings"])
+
+
+def test_merge_warning_tier_excluded_from_passed_checks() -> None:
+    """A warning-tier check the LLM ALSO listed in passed_checks must not
+    appear in the merged passed_checks once it has been routed to warnings."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C7",
+            "verdict_level": "warning",
+            "location": "caption",
+            "description": "Hype detected",
+            "fix_instruction": "Remove hype.",
+        }],
+        "passed_checks": ["C7", "C1"],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert "C7" not in merged["passed_checks"]
+    assert "C1" in merged["passed_checks"]
+
+
 def test_merge_warnings_deduplicated() -> None:
     """Warnings from both sources merge and deduplicate by check_id."""
     det_warnings = [{
@@ -1203,6 +1279,93 @@ def test_evaluate_draft_revision_round_3_escalation(
     )
     assert output["verdict"] == "hard_fail"
     assert "2 revision rounds" in output["notes"]
+
+
+# --- C7 (voice anti-pattern) tier & routing ---
+
+def test_c7_warning_does_not_gate_verdict(base_row, base_config) -> None:
+    """A row whose only LLM-flagged issue is C7 must verdict `pass` —
+    C7 is warning-tier and never blocks."""
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [{
+                "check_id": "C7",
+                "category": "content_voice",
+                "verdict_level": "warning",
+                "location": "entire caption",
+                "description": (
+                    "Influencer cadence detected: 'Let's crush this.'"
+                ),
+                "fix_instruction": "Remove the rally-cry phrasing.",
+            }],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=None,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    assert output["verdict"] == "pass", output
+    assert not any(f["check_id"] == "C7" for f in output["failed_checks"])
+    assert any(w["check_id"] == "C7" for w in output["warnings"])
+
+
+def test_c7_clean_voice_no_warning(base_row, base_config) -> None:
+    """A clean, plainspoken caption with no anti-patterns: LLM passes C7,
+    nothing about C7 appears in failed_checks or warnings."""
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "pass",
+            "failed_checks": [],
+            "warnings": [],
+            "passed_checks": list(critic.ALL_CHECK_IDS),
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=None,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    assert output["verdict"] == "pass"
+    assert not any(f["check_id"] == "C7" for f in output["failed_checks"])
+    assert not any(w["check_id"] == "C7" for w in output["warnings"])
+    assert "C7" in output["passed_checks"]
+
+
+def test_c7_verdict_level_is_warning() -> None:
+    """Registry sanity: C7 is warning-tier."""
+    assert critic.VERDICT_LEVEL_BY_CHECK["C7"] == "warning"
 
 
 # --- Integration test with mocked LLM and sheets ---

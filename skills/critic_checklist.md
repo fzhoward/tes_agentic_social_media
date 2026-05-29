@@ -68,7 +68,9 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 | B10 | **Reading level.** Content should target 6th-7th grade Flesch-Kincaid reading level. | Brand voice: Caption Formatting |
 | B11 | **Creative hook text ≤ 7 words.** The `creative_hook_text` field must contain no more than 7 words. Distinct from `caption_hook` — neither string may be a case-insensitive substring of the other. | Drafter SOP: Creative Hook Text Rules |
 
-### C. Content & Voice Rules (Soft Fail)
+### C. Content & Voice Rules (Soft Fail unless noted)
+
+*C1-C6 are soft_fail. C7 is **warning** — surfaces on the approval card but does not block the verdict.*
 
 | ID | Check | Reference |
 |----|-------|-----------|
@@ -78,7 +80,7 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 | C4 | **Specificity standard.** The post should use specific machines, job types, conditions, locations, or decisions where relevant — not vague generalities. For Equipment Spotlight and Social Proof posts, specific machine models are expected. For Educational and Behind-the-Scenes posts, specificity may be satisfied by job types, site conditions, locations, or decision criteria — a named model is NOT required and should not be demanded where it would dilute a general lesson.| Brand voice: Specificity Standard |
 | C5 | **Geographic references earn their place.** Location references must add real meaning a local reader would recognize, not be used as filler. | Brand voice: Default Content Rules |
 | C6 | **No cheap-price positioning.** The post must not position the business as the cheapest, most affordable, or budget option. | Brand voice: Brand Position |
-| C7 | **Voice match.** The post should sound like the defined brand voice (e.g., practical, plainspoken, confident without exaggeration) and not like a marketing agency, national chain, or motivational influencer. | Brand voice: Core Voice, What Not to Sound Like |
+| C7 | **Voice anti-patterns (warning).** Flag ONLY when the caption contains concrete markers of off-brand voice: hype-heavy sales-page language, motivational-influencer cadence or rally-cries, marketing-agency / national-chain ad-speak, hollow superlatives, gimmicky enthusiasm, or framing that makes equipment work sound effortless or risk-free. Do NOT flag a caption merely for being improvable, for not being "more" plainspoken, or for any subjective gap when no anti-pattern marker is actually present. A plainspoken, calm, practical caption with no anti-pattern markers PASSES. This is a **warning**, not a soft_fail — it surfaces on the approval card for human review and does not block the row or trigger a revision round. | Brand voice: What T.E.S. Should Not Sound Like |
 
 ### D. Platform Compliance (Soft Fail)
 
