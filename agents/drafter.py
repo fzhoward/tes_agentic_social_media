@@ -961,6 +961,29 @@ def build_image_candidates_block(image_candidates: list[dict] | None) -> str:
     )
 
 
+def build_revision_block(
+    previous_output: dict | None,
+    revision_round: int,
+) -> str:
+    """Return the revision block appended to the round-2+ user message.
+
+    Empty string when there is no previous Critic output (round 1).
+    The shape mirrors the Critic's own round-2 phrasing for consistency.
+    """
+    if not previous_output:
+        return ""
+    prev = json.dumps(previous_output, indent=2, ensure_ascii=False)
+    return (
+        f"\n\n# Previous Critic Output (revision_round={revision_round})\n\n"
+        "Your previous draft was reviewed by an independent QA critic and "
+        "produced the verdict below. You MUST address every `failed_checks` "
+        "entry in your new draft. Each entry includes the specific defect "
+        "(`description`) and a directive (`fix_instruction`) your revision "
+        "must implement. Do NOT regress any check that previously passed.\n\n"
+        f"```json\n{prev}\n```\n"
+    )
+
+
 def build_drafter_messages(
     row: dict,
     catalog_item: dict | None,
@@ -976,6 +999,7 @@ def build_drafter_messages(
     review_excerpt_skill: str = "",
     review_excerpt_max_chars: int | None = None,
     image_candidates: list[dict] | None = None,
+    revision_block: str = "",
 ) -> tuple[str, str]:
     """Build (system_message, user_message) for the Anthropic call."""
     platform = str(row.get(CQ_PLATFORM, "")).strip().lower()
@@ -1257,6 +1281,9 @@ Return exactly this JSON shape (no markdown fences, no commentary):
 - All text must pass the brand voice quality checklist.
 """
 
+    if revision_block:
+        user_message += revision_block
+
     if retry_nudge:
         user_message += (
             "\n\nIMPORTANT: Return valid JSON only. No markdown fences, no "
@@ -1302,6 +1329,7 @@ def get_llm_draft(
     review_data: dict | None = None,
     review_excerpt_max_chars: int | None = None,
     image_candidates: list[dict] | None = None,
+    revision_block: str = "",
 ) -> dict:
     """Call the LLM with one JSON-only retry. Returns the parsed dict."""
     common_kwargs = dict(
@@ -1318,6 +1346,7 @@ def get_llm_draft(
         review_excerpt_skill=skills.get("review_excerpt_selection", ""),
         review_excerpt_max_chars=review_excerpt_max_chars,
         image_candidates=image_candidates,
+        revision_block=revision_block,
     )
     system_msg, user_msg = build_drafter_messages(**common_kwargs)
 
@@ -2144,6 +2173,8 @@ def draft_single_row(
     context: dict[str, Any],
     config: Config,
     dry_run: bool = False,
+    revision_round: int = 1,
+    previous_output: dict | None = None,
 ) -> dict:
     """Draft a single Content Queue row end-to-end."""
     row = _find_row_by_id(context["queue_rows"], row_id)
@@ -2156,11 +2187,16 @@ def draft_single_row(
         }
 
     actual_status = str(row.get(CQ_STATUS, "")).strip().lower()
-    if actual_status != "planned":
+    is_revision = revision_round > 1
+    allowed = {"planned"} if not is_revision else {"planned", "drafted"}
+    if actual_status not in allowed:
         return {
             "status": "skipped",
             "row_id": row_id,
-            "reason": f"status is {actual_status!r}, expected 'planned'",
+            "reason": (
+                f"status is {actual_status!r}, expected one of "
+                f"{sorted(allowed)} (revision_round={revision_round})"
+            ),
             "dry_run": dry_run,
         }
 
@@ -2278,6 +2314,7 @@ def draft_single_row(
     )
 
     # --- Step 4-5: caption via LLM ---
+    revision_block = build_revision_block(previous_output, revision_round)
     try:
         parsed = get_llm_draft(
             row=row,
@@ -2287,6 +2324,7 @@ def draft_single_row(
             review_data=review_data,
             review_excerpt_max_chars=review_excerpt_max_chars,
             image_candidates=image_candidates,
+            revision_block=revision_block,
         )
     except Exception as exc:
         return {
@@ -2441,7 +2479,7 @@ def draft_single_row(
             CQ_MEDIA_URL: media_drive_id,
             CQ_MEDIA_FORMAT_USED: media_format_used,
             CQ_DRAFT_RATIONALE: draft_rationale,
-            CQ_REVISION_ROUND: "1",
+            CQ_REVISION_ROUND: str(revision_round),
         }
         if image_id:
             updates[CQ_SOURCE_IMAGE] = image_id
@@ -2552,11 +2590,23 @@ def find_planned_rows_in_window(
     return out
 
 
-def run_single(row_id: str, dry_run: bool = False) -> dict:
+def run_single(
+    row_id: str,
+    dry_run: bool = False,
+    revision_round: int = 1,
+    previous_output: dict | None = None,
+) -> dict:
     """Public entry point for drafting a single row."""
     config = load_config()
     context = load_drafter_context(config)
-    return draft_single_row(row_id, context, config, dry_run=dry_run)
+    return draft_single_row(
+        row_id,
+        context,
+        config,
+        dry_run=dry_run,
+        revision_round=revision_round,
+        previous_output=previous_output,
+    )
 
 
 def run_all_planned(dry_run: bool = False, limit: int | None = None) -> dict:
@@ -2631,10 +2681,60 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Generate caption + media but do not write to sheets or Drive.",
     )
+    parser.add_argument(
+        "--revision-round",
+        type=int,
+        default=1,
+        help=(
+            "Revision round. >1 indicates a Critic-driven revision; "
+            "requires --previous-output. Applies to --row-id only."
+        ),
+    )
+    parser.add_argument(
+        "--previous-output",
+        default=None,
+        help=(
+            "Path to a JSON file containing the previous Critic output "
+            "(failed_checks + fix_instructions). Required when "
+            "--revision-round > 1. Applies to --row-id only."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    if args.all_planned and (
+        args.revision_round != 1 or args.previous_output is not None
+    ):
+        parser.error(
+            "--all-planned does not support --revision-round or "
+            "--previous-output (revisions are always single-row)"
+        )
+    if args.revision_round > 1 and not args.previous_output:
+        parser.error(
+            "--revision-round > 1 requires --previous-output"
+        )
+    if args.previous_output and args.revision_round <= 1:
+        parser.error(
+            "--previous-output requires --revision-round > 1"
+        )
+
+    previous_output: dict | None = None
+    if args.previous_output:
+        try:
+            with open(args.previous_output, "r", encoding="utf-8") as f:
+                previous_output = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(
+                f"could not load --previous-output "
+                f"{args.previous_output!r}: {type(exc).__name__}: {exc}"
+            )
+
     if args.row_id:
-        result = run_single(args.row_id, dry_run=args.dry_run)
+        result = run_single(
+            args.row_id,
+            dry_run=args.dry_run,
+            revision_round=args.revision_round,
+            previous_output=previous_output,
+        )
     else:
         result = run_all_planned(dry_run=args.dry_run, limit=args.limit)
 

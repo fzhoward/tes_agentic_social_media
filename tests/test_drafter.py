@@ -2055,11 +2055,15 @@ def _run_draft_with_mocks(
     candidates: list[dict],
     llm_output: dict,
     queue_row_overrides: dict | None = None,
+    revision_round: int = 1,
+    previous_output: dict | None = None,
 ) -> tuple[dict, dict]:
     """Drive draft_single_row through a mocked LLM + candidate selector.
 
     Returns (result_dict, call_counters) where call_counters tracks how
-    many times the mocks were invoked.
+    many times the mocks were invoked. The captured `last_user_msg` in
+    counters lets tests inspect what was sent to the LLM (e.g., to
+    verify revision_block injection).
     """
     context = _build_mock_drafter_context()
     if queue_row_overrides:
@@ -2090,8 +2094,10 @@ def _run_draft_with_mocks(
             "fallback": False,
         }
 
-    def fake_call_anthropic(*args, **kwargs):
+    def fake_call_anthropic(system_message, user_message, *args, **kwargs):
         counters["call_anthropic"] += 1
+        counters["last_user_msg"] = user_message
+        counters["last_system_msg"] = system_message
         return _json.dumps(llm_output)
 
     def fake_generate_media(*args, **kwargs):
@@ -2118,6 +2124,8 @@ def _run_draft_with_mocks(
             context=context,
             config=load_config(),
             dry_run=True,
+            revision_round=revision_round,
+            previous_output=previous_output,
         )
     finally:
         _image_selector.select_top_candidates = orig_top
@@ -2210,6 +2218,230 @@ def test_strategist_preassigned_image_skips_candidates() -> None:
         and "pre-assigned" in src.get("selection_reason", "").lower(),
         f"status={result.get('status')}, source_image={src!r}, "
         f"counters={counters}, error={result.get('error')!r}",
+    )
+
+
+# ----------------------------------------------------------------------
+# Session 25 — Drafter revision-input contract
+# ----------------------------------------------------------------------
+
+def _common_build_kwargs() -> dict:
+    """Minimal kwargs for build_drafter_messages used by revision tests."""
+    return dict(
+        row={
+            drafter.CQ_PLATFORM: "facebook",
+            drafter.CQ_OBJECTIVE: "brand_awareness",
+            drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+            drafter.CQ_CTA_TYPE: "save",
+            drafter.CQ_TEXT_OVERLAY: "FALSE",
+            drafter.CQ_MEDIA_FORMAT: "image2_enhanced",
+            drafter.CQ_ANGLE: "Show the machine on a tight residential lot.",
+            drafter.CQ_DRAFT_NOTES: "",
+            drafter.CQ_FOCUS_EQUIPMENT: "",
+        },
+        catalog_item=None,
+        config=load_config(),
+        brand_voice="(brand voice)",
+        hook_skill="(hook)",
+        cta_skill="(cta)",
+        platform_style="(platform style)",
+        few_shot_library="(few shots)",
+        strategy_guidance="(strategy guidance)",
+    )
+
+
+def test_round1_unchanged_when_no_revision_block() -> None:
+    """build_drafter_messages with no revision_block (default and explicit
+    empty) produces an identical user message — no regression on round 1."""
+    kwargs = _common_build_kwargs()
+    _sys_a, user_a = drafter.build_drafter_messages(**kwargs)
+    _sys_b, user_b = drafter.build_drafter_messages(
+        revision_block="", **kwargs,
+    )
+    no_block_text = "Previous Critic Output" not in user_a
+    _check(
+        "55. build_drafter_messages — round-1 user message unchanged by "
+        "default and explicit empty revision_block, no Critic block injected",
+        user_a == user_b and no_block_text,
+        f"equal={user_a == user_b}, no_block_text={no_block_text}",
+    )
+
+
+def test_revision_block_appended_at_tail() -> None:
+    """With a non-empty revision_block, the user message ends with that
+    block and is byte-identical to round 1 up to the append point."""
+    kwargs = _common_build_kwargs()
+    _sys_a, baseline = drafter.build_drafter_messages(**kwargs)
+
+    block = (
+        "\n\n# Previous Critic Output (revision_round=2)\n\n"
+        "Sample block body.\n"
+    )
+    _sys_b, with_block = drafter.build_drafter_messages(
+        revision_block=block, **kwargs,
+    )
+
+    ends_with_block = with_block.endswith(block)
+    prefix_matches = with_block[: len(baseline)] == baseline
+    appended_only_block = with_block == baseline + block
+
+    _check(
+        "56. build_drafter_messages — revision_block is appended verbatim "
+        "at the tail of the user message; round-1 prefix is byte-identical",
+        ends_with_block and prefix_matches and appended_only_block,
+        f"ends_with_block={ends_with_block}, "
+        f"prefix_matches={prefix_matches}, "
+        f"appended_only_block={appended_only_block}",
+    )
+
+
+def test_build_revision_block_contains_fix_instruction() -> None:
+    """build_revision_block must surface the previous Critic's
+    fix_instruction text (the Drafter cannot revise without it)."""
+    prev = {
+        "verdict": "soft_fail",
+        "failed_checks": [
+            {
+                "check_id": "C2",
+                "category": "non_negotiable",
+                "verdict_level": "soft_fail",
+                "location": "caption body sentence 2",
+                "description": "tone drifts from rugged to corporate",
+                "fix_instruction": (
+                    "Rewrite sentence 2 in plain operator voice; "
+                    "drop the word 'leverage'."
+                ),
+            }
+        ],
+    }
+    block = drafter.build_revision_block(prev, revision_round=2)
+    has_header = "Previous Critic Output (revision_round=2)" in block
+    has_fix_instruction = (
+        "Rewrite sentence 2 in plain operator voice" in block
+    )
+    has_check_id = "C2" in block
+
+    _check(
+        "57. build_revision_block — block contains the previous "
+        "fix_instruction, check_id, and the revision_round header",
+        has_header and has_fix_instruction and has_check_id,
+        f"has_header={has_header}, "
+        f"has_fix_instruction={has_fix_instruction}, "
+        f"has_check_id={has_check_id}",
+    )
+
+    empty = drafter.build_revision_block(None, revision_round=2)
+    _check(
+        "57b. build_revision_block — returns empty string when no "
+        "previous output is given",
+        empty == "",
+        f"got={empty!r}",
+    )
+
+
+def test_status_gate_allows_drafted_on_revision() -> None:
+    """A row with status=drafted MUST proceed past the status gate when
+    revision_round > 1 — that is the whole point of accepting Critic-driven
+    revisions back into the Drafter."""
+    candidates = _sample_candidates()
+    prev = {
+        "verdict": "soft_fail",
+        "failed_checks": [
+            {
+                "check_id": "C2",
+                "fix_instruction": "tighten the hook.",
+                "description": "hook is too soft",
+            }
+        ],
+    }
+    result, counters = _run_draft_with_mocks(
+        candidates=candidates,
+        llm_output=_valid_llm_output(selected_image_id="img_a"),
+        queue_row_overrides={drafter.CQ_STATUS: "drafted"},
+        revision_round=2,
+        previous_output=prev,
+    )
+
+    proceeded = (
+        result.get("status") == "success"
+        and counters["call_anthropic"] >= 1
+    )
+    user_msg = counters.get("last_user_msg", "")
+    block_in_user = (
+        "Previous Critic Output (revision_round=2)" in user_msg
+        and "tighten the hook" in user_msg
+    )
+    _check(
+        "58. draft_single_row — drafted row IS allowed on revision_round=2; "
+        "LLM is called with the revision_block appended to user message",
+        proceeded and block_in_user,
+        f"status={result.get('status')}, "
+        f"calls={counters.get('call_anthropic')}, "
+        f"block_in_user={block_in_user}, "
+        f"error={result.get('error')!r}",
+    )
+
+
+def test_status_gate_rejects_drafted_round1() -> None:
+    """Round-1 behavior preserved: a row already in status=drafted is
+    skipped when revision_round=1 (no Critic output) — only `planned`
+    rows are eligible for first-pass drafting."""
+    candidates = _sample_candidates()
+    result, counters = _run_draft_with_mocks(
+        candidates=candidates,
+        llm_output=_valid_llm_output(selected_image_id="img_a"),
+        queue_row_overrides={drafter.CQ_STATUS: "drafted"},
+        revision_round=1,
+        previous_output=None,
+    )
+    skipped = result.get("status") == "skipped"
+    no_llm_call = counters.get("call_anthropic", 0) == 0
+    reason = str(result.get("reason", ""))
+    mentions_status = "'drafted'" in reason or "drafted" in reason
+
+    _check(
+        "59. draft_single_row — drafted row is still skipped on "
+        "revision_round=1 (round-1 planned-only behavior preserved)",
+        skipped and no_llm_call and mentions_status,
+        f"status={result.get('status')}, "
+        f"calls={counters.get('call_anthropic')}, "
+        f"reason={reason!r}",
+    )
+
+
+def test_cli_revision_requires_previous_output() -> None:
+    """The CLI must reject --revision-round > 1 when --previous-output is
+    missing. argparse.error() raises SystemExit with code 2."""
+    err_buf = io.StringIO()
+    raised = False
+    code: int | None = None
+    try:
+        with redirect_stdout(io.StringIO()):
+            from contextlib import redirect_stderr
+            with redirect_stderr(err_buf):
+                drafter.main([
+                    "--row-id", "FAKE-ROW-01",
+                    "--revision-round", "2",
+                ])
+    except SystemExit as exc:
+        raised = True
+        code = int(exc.code) if isinstance(exc.code, int) else 2
+
+    err_text = err_buf.getvalue()
+    mentions_previous_output = "--previous-output" in err_text
+    mentions_revision_round = "--revision-round" in err_text
+
+    _check(
+        "60. drafter CLI — --revision-round > 1 without --previous-output "
+        "exits with an argparse error mentioning both flags",
+        raised
+        and code == 2
+        and mentions_previous_output
+        and mentions_revision_round,
+        f"raised={raised}, code={code}, "
+        f"mentions_previous_output={mentions_previous_output}, "
+        f"mentions_revision_round={mentions_revision_round}, "
+        f"stderr={err_text!r}",
     )
 
 
@@ -2382,6 +2614,12 @@ def run_tests(run_live: bool) -> int:
     test_llm_image_pick_invalid_falls_back()
     test_llm_image_pick_empty_uses_default()
     test_strategist_preassigned_image_skips_candidates()
+    test_round1_unchanged_when_no_revision_block()
+    test_revision_block_appended_at_tail()
+    test_build_revision_block_contains_fix_instruction()
+    test_status_gate_allows_drafted_on_revision()
+    test_status_gate_rejects_drafted_round1()
+    test_cli_revision_requires_previous_output()
 
     if run_live:
         print()
