@@ -204,6 +204,13 @@ def test_check_exclamation_multiple() -> None:
     assert len(b2) == 1, failures
 
 
+def test_check_exclamation_description_counts_occurrences() -> None:
+    """B2 — description reports the literal number of `!` characters."""
+    failures = critic.check_exclamation("Best deal! Call now!")
+    assert len(failures) == 1
+    assert "2 occurrences" in failures[0]["description"]
+
+
 def test_check_exclamation_empty() -> None:
     """B2 — empty string is a no-op."""
     assert critic.check_exclamation("") == []
@@ -240,6 +247,20 @@ def test_check_hashtags_empty() -> None:
 def test_check_hashtags_no_false_positive() -> None:
     """B4 — bare `#` not followed by a word char does not trip the check."""
     assert critic.check_hashtags("Number # of units delivered: 3") == []
+
+
+def test_check_hashtags_numeric_ranking_not_flagged() -> None:
+    """B4 — `#1` numeric ranking is not a hashtag (no letters after `#`)."""
+    assert critic.check_hashtags("We are #1 in the area") == []
+
+
+def test_check_hashtags_description_lists_matches() -> None:
+    """B4 — failure description names each detected hashtag."""
+    failures = critic.check_hashtags("Rent today #construction #TES")
+    assert len(failures) == 1
+    desc = failures[0]["description"]
+    assert "#construction" in desc
+    assert "#TES" in desc
 
 
 def test_sentence_length_splits_correctly() -> None:

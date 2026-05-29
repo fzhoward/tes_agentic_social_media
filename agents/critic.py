@@ -104,6 +104,10 @@ MD_BULLET_RE = re.compile(r"(?m)^\s*[-*+]\s+\S")
 
 EM_DASH = "—"
 
+# Hashtag detection (B4) — `#` followed by a word character. Avoids matching
+# a bare `#` or `#1` numeric ranking, which are not hashtags.
+HASHTAG_RE = re.compile(r"#\w*[A-Za-z]\w*")
+
 # Sentence boundary for B6. Split on `.`, `!`, `?` followed by whitespace or
 # end-of-string. Conservative — handles common cases without choking on
 # abbreviations (the Drafter strips banned `!` so abbreviation false-positives
@@ -462,36 +466,52 @@ def check_em_dash(caption: str) -> list[dict]:
 
 
 def check_exclamation(caption: str) -> list[dict]:
-    """B2 — no exclamation points. Returns failures list."""
+    """B2 — no exclamation points. Returns failures list.
+
+    Deterministic so the LLM cannot hallucinate phantom exclamation points.
+    Counts literal `!` characters; the merge logic treats a passed B2 here
+    as authoritative over any LLM-reported B2 failure.
+    """
     if not caption or "!" not in caption:
         return []
+    count = caption.count("!")
     return [_make_failure(
         check_id="B2",
         location="caption",
-        description="Exclamation point detected in caption",
+        description=(
+            f"Exclamation point detected ({count} occurrence"
+            f"{'s' if count != 1 else ''}). Brand voice forbids exclamation "
+            f"points."
+        ),
         fix_instruction=(
-            "Remove all exclamation points. Replace with periods or "
-            "restructure the sentence. This brand voice does not use "
-            "exclamation points."
+            "Remove every exclamation point. Replace with a period. Convey "
+            "energy through word choice and sentence rhythm, not punctuation."
         ),
     )]
 
 
 def check_hashtags(caption: str) -> list[dict]:
-    """B4 — no hashtags. Returns failures list."""
+    """B4 — no hashtags. Returns failures list.
+
+    Deterministic. Matches `#` immediately followed by a word character
+    (so `#1 tool` or a bare `#` is not flagged as a hashtag).
+    """
     if not caption:
         return []
-    # Require # followed by a word character to avoid false-positives on bare
-    # `#` or non-hashtag uses (e.g., hex colors aren't in caption prose).
-    if not re.search(r"#\w", caption):
+    matches = HASHTAG_RE.findall(caption)
+    if not matches:
         return []
+    unique = sorted(set(matches))
     return [_make_failure(
         check_id="B4",
         location="caption",
-        description="Hashtag detected in caption",
+        description=(
+            f"Hashtag(s) detected: {', '.join(unique)}. Brand voice forbids "
+            f"hashtags on this platform."
+        ),
         fix_instruction=(
-            "Remove all hashtags. This brand voice does not use hashtags "
-            "in captions."
+            f"Remove all hashtags ({', '.join(unique)}). Work any essential "
+            f"keywords into the caption prose instead."
         ),
     )]
 
@@ -1056,6 +1076,10 @@ def build_critic_messages(
         "4. The deterministic pre-check results provided below have ALREADY "
         "been evaluated by code. Trust them. Do NOT re-evaluate the same "
         "checks unless you have strong evidence the code missed something. "
+        "In particular, exclamation points (B2), hashtags (B4), emoji (A2), "
+        "em dashes (B3), markdown (B1), and pricing (A1) are character-level "
+        "checks decided by code — never flag these yourself; defer entirely "
+        "to the pre-check block. "
         "Focus your judgment on the checks that require reading "
         "comprehension (C1-C7, F1-F4, G1) and any voice/content issues.\n"
         "5. Catalog cross-reference: if a catalog record is provided, every "
