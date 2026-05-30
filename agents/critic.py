@@ -196,6 +196,8 @@ CQ_CRITIC_NOTES = "critic_notes"
 
 CAT_ITEM_ID = "item_id"
 CAT_STATUS = "status"
+CAT_ITEM_NAME = "item_name"
+CAT_MODEL = "model"
 CAT_WEIGHT = "weight"
 CAT_DIG_DEPTH = "dig_depth"
 CAT_REACH = "reach"
@@ -319,6 +321,24 @@ def _normalize_for_match(text: str) -> str:
     t = re.sub(r"[^\w\s]", "", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+
+def _model_name_in_caption(caption: str, catalog_item: dict | None) -> bool:
+    """True if the catalog model or item_name appears in the caption.
+
+    Used to suppress C4 model-naming false negatives: when the featured
+    machine is demonstrably named in the caption, C4 must not fail on
+    'name the machine' grounds. Uses _normalize_for_match for a
+    punctuation/case-insensitive containment test.
+    """
+    if not caption or not catalog_item:
+        return False
+    norm_caption = _normalize_for_match(caption)
+    for field in (CAT_MODEL, CAT_ITEM_NAME):
+        val = _normalize_for_match(str(catalog_item.get(field, "") or ""))
+        if val and val in norm_caption:
+            return True
+    return False
 
 
 def _make_failure(
@@ -1129,6 +1149,7 @@ def build_critic_messages(
       "check_id": "A1",
       "category": "non_negotiable",
       "verdict_level": "hard_fail",
+      "subreason": "model_naming | specificity (C4 only; omit otherwise)",
       "location": "sentence 3 of caption",
       "description": "...",
       "fix_instruction": "..."
@@ -1210,7 +1231,14 @@ def build_critic_messages(
         "the Drafter must not invent one. In that case, judge C4 on "
         "specificity of job type, site condition, local scenario, or "
         "decision frame instead. When focus_equipment_id is set, C4 may "
-        "require naming the specific machine where relevant.\n\n"
+        "require naming the specific machine where relevant; however, if "
+        "the catalog model or item_name already appears in the caption, do "
+        "NOT raise C4 on model-naming grounds — that complaint is invalid "
+        "when the machine is demonstrably named. Whenever you fail C4, "
+        "include a `subreason` field set to exactly `\"model_naming\"` "
+        "(failure is solely about naming the machine) or `\"specificity\"` "
+        "(failure is about job-type / site-condition / decision-frame "
+        "specificity) so downstream code can distinguish them.\n\n"
         "---\n\n"
         "# Critic Checklist\n\n"
         f"{critic_checklist}\n\n"
@@ -1250,6 +1278,9 @@ def build_critic_messages(
         f"do not drop them. Do not add duplicate entries for checks the "
         f"pre-check block already flagged.\n"
         f"- `passed_checks` is a flat list of check ID strings.\n"
+        f"- C4 failures must include `subreason` set to `\"model_naming\"` "
+        f"or `\"specificity\"` so downstream code can tell them apart. "
+        f"Omit `subreason` on other checks.\n"
         f"- `revision_round` in the output must be {revision_round}.\n"
     )
 
@@ -1352,6 +1383,7 @@ def merge_results(
     deterministic_passed: list[str],
     deterministic_warnings: list[dict],
     llm_result: dict,
+    suppress_c4_model_naming: bool = False,
 ) -> dict:
     """Merge deterministic results with the LLM's JSON output.
 
@@ -1359,6 +1391,13 @@ def merge_results(
     appears in deterministic_failures is final — even if the LLM tried to
     mark it passed. A check ID that the LLM flagged but deterministic did
     not evaluate is kept as the LLM's call.
+
+    ``suppress_c4_model_naming`` drops a single LLM C4 failure whose
+    ``subreason`` is ``"model_naming"``. This handles the reproducible
+    false negative where the model is already named in the caption but the
+    LLM still demands it be added. C4 failures with any other subreason
+    (including ``"specificity"`` or empty) are kept so genuine specificity
+    misses still gate.
     """
     det_failed_ids = {f["check_id"] for f in deterministic_failures}
     det_passed_ids = set(deterministic_passed)
@@ -1382,6 +1421,17 @@ def merge_results(
         # trust the code.
         if check_id in det_passed_ids:
             continue
+        # Suppress the C4 model-naming false negative: when the model is
+        # demonstrably named in the caption, drop a C4 failure whose
+        # subreason is "model_naming". Other subreasons (specificity,
+        # empty) are kept so real specificity misses still gate.
+        if (
+            check_id == "C4"
+            and suppress_c4_model_naming
+            and str(llm_fail.get("subreason", "")).strip().lower()
+            == "model_naming"
+        ):
+            continue
         resolved_level = str(
             llm_fail.get("verdict_level")
             or VERDICT_LEVEL_BY_CHECK.get(check_id, "soft_fail")
@@ -1393,7 +1443,7 @@ def merge_results(
             })
             continue
         # Normalize the entry shape.
-        merged_failures.append({
+        entry = {
             "check_id": check_id,
             "category": str(
                 llm_fail.get("category")
@@ -1403,7 +1453,11 @@ def merge_results(
             "location": str(llm_fail.get("location", "") or ""),
             "description": str(llm_fail.get("description", "") or ""),
             "fix_instruction": str(llm_fail.get("fix_instruction", "") or ""),
-        })
+        }
+        subreason = str(llm_fail.get("subreason", "") or "").strip()
+        if subreason:
+            entry["subreason"] = subreason
+        merged_failures.append(entry)
 
     merged_failed_ids = {f["check_id"] for f in merged_failures}
     llm_routed_warning_ids = {
@@ -1519,11 +1573,15 @@ def evaluate_draft(
             revision_round, previous_critic_output, skills,
         )
 
+    suppress_c4 = _model_name_in_caption(
+        str(row.get(CQ_CAPTION, "") or ""), catalog_item,
+    )
     merged = merge_results(
         deterministic_failures=pre_failures,
         deterministic_passed=pre_passed,
         deterministic_warnings=pre_warnings,
         llm_result=llm_result,
+        suppress_c4_model_naming=suppress_c4,
     )
     verdict, escalation_note = determine_verdict(
         merged["failed_checks"], revision_round,

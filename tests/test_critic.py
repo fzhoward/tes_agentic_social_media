@@ -1066,6 +1066,304 @@ def test_merge_warnings_deduplicated() -> None:
     assert w1["description"] == "Code-detected W1"
 
 
+# --- C4 model-naming false-negative suppression (Session 29) ---
+
+def test_model_name_in_caption_matches_model_field() -> None:
+    """`_model_name_in_caption` returns True when the catalog `model`
+    appears in the caption."""
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+    caption = "Tight residential lot. The John Deere 325G fits the gate."
+    assert critic._model_name_in_caption(caption, catalog_item) is True
+
+
+def test_model_name_in_caption_matches_item_name_field() -> None:
+    """Match via `item_name` when `model` doesn't appear but `item_name`
+    does."""
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+    caption = "A compact track loader handles the dig cleanly."
+    assert critic._model_name_in_caption(caption, catalog_item) is True
+
+
+def test_model_name_in_caption_absent_returns_false() -> None:
+    """Neither model nor item_name in the caption → False."""
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+    caption = "Pick the right machine for a tight residential lot."
+    assert critic._model_name_in_caption(caption, catalog_item) is False
+
+
+def test_model_name_in_caption_no_catalog_returns_false() -> None:
+    """No catalog item → False."""
+    assert critic._model_name_in_caption("any caption", None) is False
+
+
+def test_model_name_in_caption_empty_caption_returns_false() -> None:
+    """Empty caption → False."""
+    catalog_item = {critic.CAT_MODEL: "John Deere 325G"}
+    assert critic._model_name_in_caption("", catalog_item) is False
+
+
+def test_model_name_in_caption_case_and_punctuation_insensitive() -> None:
+    """Casing and surrounding punctuation don't defeat the match."""
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "",
+    }
+    caption = "Even on wet clay, the JOHN DEERE 325G! holds the line."
+    assert critic._model_name_in_caption(caption, catalog_item) is True
+
+
+def test_merge_suppresses_c4_model_naming_when_flag_set() -> None:
+    """C4 LLM failure with subreason=model_naming + suppress=True → dropped."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C4",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "subreason": "model_naming",
+            "location": "caption",
+            "description": "Caption does not name the specific machine.",
+            "fix_instruction": "Name the John Deere 325G in the caption.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        suppress_c4_model_naming=True,
+    )
+    assert not any(f["check_id"] == "C4" for f in merged["failed_checks"])
+
+
+def test_merge_keeps_c4_specificity_even_when_flag_set() -> None:
+    """C4 LLM failure with subreason=specificity + suppress=True → KEPT."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C4",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "subreason": "specificity",
+            "location": "caption",
+            "description": "No job-type or site-condition specifics.",
+            "fix_instruction": "Add a concrete job type and site condition.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        suppress_c4_model_naming=True,
+    )
+    c4 = [f for f in merged["failed_checks"] if f["check_id"] == "C4"]
+    assert len(c4) == 1
+    # Subreason is carried through onto the merged entry.
+    assert c4[0].get("subreason") == "specificity"
+
+
+def test_merge_keeps_c4_model_naming_when_flag_not_set() -> None:
+    """C4 LLM failure with subreason=model_naming + suppress=False → KEPT.
+
+    Suppression must require the deterministic precondition; without the
+    flag, the LLM's C4 stands.
+    """
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C4",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "subreason": "model_naming",
+            "location": "caption",
+            "description": "Caption does not name the specific machine.",
+            "fix_instruction": "Name the John Deere 325G in the caption.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        suppress_c4_model_naming=False,
+    )
+    c4 = [f for f in merged["failed_checks"] if f["check_id"] == "C4"]
+    assert len(c4) == 1
+    assert c4[0].get("subreason") == "model_naming"
+
+
+def test_merge_suppress_flag_does_not_affect_other_checks() -> None:
+    """suppress_c4_model_naming must not touch non-C4 failures, even if
+    they happen to carry a `subreason: model_naming` (which they shouldn't,
+    but the flag is C4-scoped by design)."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C1",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "subreason": "model_naming",
+            "location": "caption",
+            "description": "Multiple unrelated topics.",
+            "fix_instruction": "Focus on one idea.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        suppress_c4_model_naming=True,
+    )
+    assert any(f["check_id"] == "C1" for f in merged["failed_checks"])
+
+
+def test_evaluate_draft_suppresses_c4_when_model_named(
+    base_row, base_config,
+) -> None:
+    """End-to-end: focus_equipment_id is set, model appears in the caption,
+    LLM emits a C4 model_naming failure → final verdict has no C4 failure."""
+    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
+    base_row[critic.CQ_CAPTION] = (
+        "Tight residential lot. The John Deere 325G fits the gate.\n\n"
+        "Zero tail swing.\n\n"
+        "No torn-up grass.\n\n"
+        "Operators stage the machine the night before whenever possible "
+        "so morning starts feel routine, not rushed.\n\n"
+        "Save this post for the next residential dig."
+    )
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_STATUS: "active",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [{
+                "check_id": "C4",
+                "category": "content_voice",
+                "verdict_level": "soft_fail",
+                "subreason": "model_naming",
+                "location": "caption",
+                "description": "Caption is too generic about the machine.",
+                "fix_instruction": "Name the John Deere 325G.",
+            }],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=catalog_item,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    failed_ids = {f["check_id"] for f in output["failed_checks"]}
+    assert "C4" not in failed_ids, output
+
+
+def test_evaluate_draft_keeps_c4_specificity_even_when_model_named(
+    base_row, base_config,
+) -> None:
+    """End-to-end: model is named, LLM emits C4 with subreason=specificity
+    → final verdict still includes the C4 failure (real specificity miss)."""
+    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
+    base_row[critic.CQ_CAPTION] = (
+        "Tight residential lot. The John Deere 325G fits the gate.\n\n"
+        "Zero tail swing.\n\n"
+        "No torn-up grass.\n\n"
+        "Operators stage the machine the night before whenever possible "
+        "so morning starts feel routine, not rushed.\n\n"
+        "Save this post for the next residential dig."
+    )
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_STATUS: "active",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [{
+                "check_id": "C4",
+                "category": "content_voice",
+                "verdict_level": "soft_fail",
+                "subreason": "specificity",
+                "location": "caption",
+                "description": "No job-type or site-condition specifics.",
+                "fix_instruction": "Add concrete job type and site detail.",
+            }],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=catalog_item,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    failed_ids = {f["check_id"] for f in output["failed_checks"]}
+    assert "C4" in failed_ids, output
+
+
+def test_system_message_c4_subreason_instruction_present(base_row) -> None:
+    """Rule #7 must tell the LLM to tag C4 failures with a subreason and
+    not to raise C4 on model-naming grounds when the model is already in
+    the caption."""
+    system_msg = _build_system_message(base_row)
+    assert "subreason" in system_msg
+    assert "model_naming" in system_msg
+    assert "specificity" in system_msg
+
+
 # --- Output validation tests ---
 
 def test_output_schema_valid() -> None:
