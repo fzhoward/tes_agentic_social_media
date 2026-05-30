@@ -1563,3 +1563,53 @@ def test_critique_handles_missing_row(base_config) -> None:
     )
     assert result["status"] == "error"
     assert "not found" in result["error"].lower()
+
+
+# --- System-message wiring tests for C4 conditional (Session 27) ---
+
+def _build_system_message(row: dict) -> str:
+    """Helper: build the Critic system message for a given row."""
+    system_msg, _user_msg = critic.build_critic_messages(
+        row=row,
+        catalog_item=None,
+        review_text="",
+        pre_check_failures=[],
+        pre_check_passed=[],
+        pre_check_warnings=[],
+        revision_round=1,
+        previous_critic_output=None,
+        critic_checklist="",
+        brand_voice="",
+        platform_style="",
+        cta_skill="",
+        content_types_skill="",
+    )
+    return system_msg
+
+
+def test_system_message_c4_conditional_clause_present(base_row) -> None:
+    """The system message must instruct the LLM that C4 is conditional on
+    focus_equipment_id and that it must not invent equipment."""
+    system_msg = _build_system_message(base_row)
+
+    assert "C4" in system_msg
+    assert "focus_equipment_id" in system_msg
+    # The reinforcement must explicitly direct the LLM not to fail C4 on
+    # missing model and not to fabricate equipment.
+    assert "do NOT fail C4" in system_msg
+    assert "invent" in system_msg
+
+
+def test_system_message_c4_clause_mentions_empty_focus(base_row) -> None:
+    """When focus_equipment_id is empty, the system message must tell the LLM
+    not to require a named machine model."""
+    row = dict(base_row)
+    row[critic.CQ_FOCUS_EQUIPMENT] = ""
+    system_msg = _build_system_message(row)
+
+    # The clause itself is row-independent (it's part of the static hard
+    # rules), but the assertion proves the LLM is told how to handle the
+    # empty case.
+    assert "focus_equipment_id is empty" in system_msg
+    assert "named machine model" in system_msg
+    assert "site condition" in system_msg or "job type" in system_msg
