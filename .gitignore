@@ -10,6 +10,7 @@ __pycache__/
 *.pyc
 *.pyo
 logs/
+evals/out/
 
 # === Local config with secrets ===
 business_config.yaml
