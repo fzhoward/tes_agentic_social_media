@@ -534,7 +534,13 @@ def check_fragment_lines(caption: str) -> list[dict]:
             f"at least 2 required for pacing."
         ),
         "fix_instruction": (
-            "Add short fragment lines (5 words or fewer) for pacing."
+            f"At least 2 fragment lines are required; you currently have "
+            f"{fragment_count}. Add {2 - fragment_count} more. A fragment "
+            f"line must sit on its own line (separated by a blank line, "
+            f"per vertical-stack formatting) and be 5 words or fewer — "
+            f"count words literally, a 6-word line does not qualify. "
+            f"Example fragments: 'Tight access.' or 'Wet clay slows "
+            f"everything.'"
         ),
     }]
 

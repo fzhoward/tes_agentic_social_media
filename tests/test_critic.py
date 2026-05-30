@@ -373,6 +373,41 @@ def test_check_fragment_lines_empty_no_op() -> None:
     assert critic.check_fragment_lines("") == []
 
 
+def test_check_fragment_lines_fix_instruction_states_count() -> None:
+    """B7 — fix_instruction must state the current count and how many more
+    are needed, plus the literal mechanical rule (own line, ≤5 words)."""
+    caption = (
+        "Access first.\n\n"
+        "Renting a compact excavator on a tight residential lot "
+        "saves you both time and headache."
+    )
+    failures = critic.check_fragment_lines(caption)
+    assert failures and failures[0]["check_id"] == "B7"
+    fix = failures[0]["fix_instruction"]
+    # current count and the exact gap
+    assert "you currently have 1" in fix
+    assert "Add 1 more" in fix
+    # mechanical rule
+    assert "own line" in fix
+    assert "5 words or fewer" in fix
+
+
+def test_check_fragment_lines_fix_instruction_zero() -> None:
+    """B7 — when there are zero qualifying fragment lines, fix_instruction
+    reports needing 2 more."""
+    caption = (
+        "Renting a compact excavator on a tight residential lot "
+        "saves you both time and headache.\n\n"
+        "Operators clear the site quickly and finish the dig without "
+        "tearing up the lawn or denting the fence."
+    )
+    failures = critic.check_fragment_lines(caption)
+    assert failures and failures[0]["check_id"] == "B7"
+    fix = failures[0]["fix_instruction"]
+    assert "you currently have 0" in fix
+    assert "Add 2 more" in fix
+
+
 def test_check_hook_duplication_unique_opening_passes() -> None:
     """B9 — unique opening line passes."""
     caption = "Tight lot, big problem.\n\nPick the right machine first.\n\nSave this."
