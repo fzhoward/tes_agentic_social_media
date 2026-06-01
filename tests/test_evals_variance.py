@@ -74,6 +74,49 @@ def test_flip_score_rejects_out_of_range() -> None:
         variance.flip_score(1.01)
 
 
+# --- instability_score boundary values -------------------------------------
+# Same shape as flip_score, but its input is fire_rate = (fails+warnings)/runs
+# rather than fail_rate. Mirror the flip_score boundary suite exactly.
+
+def test_instability_score_unanimous_never_fired_is_zero() -> None:
+    """fire_rate 0.0 (never failed nor warned) -> perfectly stable."""
+    assert variance.instability_score(0.0) == 0.0
+
+
+def test_instability_score_unanimous_always_fired_is_zero() -> None:
+    """fire_rate 1.0 (always fired, fail or warn) -> stable too."""
+    assert variance.instability_score(1.0) == 0.0
+
+
+def test_instability_score_fifty_fifty_is_maximal() -> None:
+    """fire_rate 0.5 is a pure coin flip -> instability_score 1.0."""
+    assert variance.instability_score(0.5) == 1.0
+
+
+def test_instability_score_symmetric_around_half() -> None:
+    """instability_score(p) must equal instability_score(1-p)."""
+    for p in (0.1, 0.25, 0.3, 0.4):
+        assert variance.instability_score(p) == pytest.approx(
+            variance.instability_score(1.0 - p),
+        )
+
+
+def test_instability_score_linear_in_each_half() -> None:
+    """0.1 -> 0.2, 0.2 -> 0.4, 0.3 -> 0.6, 0.4 -> 0.8."""
+    assert variance.instability_score(0.1) == pytest.approx(0.2)
+    assert variance.instability_score(0.2) == pytest.approx(0.4)
+    assert variance.instability_score(0.3) == pytest.approx(0.6)
+    assert variance.instability_score(0.4) == pytest.approx(0.8)
+
+
+def test_instability_score_rejects_out_of_range() -> None:
+    """Negative or >1 fire_rate should raise — defends against tally bugs."""
+    with pytest.raises(ValueError):
+        variance.instability_score(-0.01)
+    with pytest.raises(ValueError):
+        variance.instability_score(1.01)
+
+
 # --- verdict_flip_score ----------------------------------------------------
 
 def test_verdict_flip_score_unanimous_is_zero() -> None:
@@ -178,6 +221,100 @@ def test_tally_check_counts_warnings() -> None:
     assert stats.verdict_tier == "warning"
 
 
+# --- tally_check: warning_rate + instability_score (v1.1) ------------------
+
+def test_tally_check_pure_pass_warning_flip_is_visible() -> None:
+    """The demoted-check regression guard: 13 pass / 7 warn, 0 fails.
+
+    flip_score (fails-only) reads 0.0 and calls this "stable", but the
+    tier-agnostic instability_score must surface the pass<->warning noise.
+    """
+    outputs = (
+        [_output([], [], warned=["C4"])] * 7
+        + [_output([], ["C4"])] * 13
+    )
+    stats = variance.tally_check("C4", outputs)
+    assert stats.runs == 20
+    assert stats.fails == 0
+    assert stats.warnings == 7
+    assert stats.passes == 13
+    # Fails-only metrics say "stable" — that is the blindness we fixed.
+    assert stats.fail_rate == 0.0
+    assert stats.flip_score == 0.0
+    # Tier-agnostic metrics see it: fire_rate = (0 + 7) / 20 = 0.35.
+    assert stats.warning_rate == pytest.approx(0.35)
+    assert stats.instability_score == pytest.approx(
+        variance.instability_score(0.35),
+    )
+    assert stats.instability_score > 0.0
+
+
+def test_tally_check_pure_pass_fail_flip_agrees_with_flip_score() -> None:
+    """With no warnings, instability_score and flip_score must agree.
+
+    5 fail / 5 pass, 0 warn -> both metrics read 1.0 (a 50/50 split is a
+    coin flip whether you count fails-only or fired-at-all).
+    """
+    outputs = (
+        [_output(["C4"], [])] * 5
+        + [_output([], ["C4"])] * 5
+    )
+    stats = variance.tally_check("C4", outputs)
+    assert stats.runs == 10
+    assert stats.fails == 5
+    assert stats.warnings == 0
+    assert stats.flip_score == 1.0
+    assert stats.instability_score == 1.0
+
+
+def test_tally_check_three_way_split_understates_by_design() -> None:
+    """Documented limitation: fire_rate folds warning and fail together.
+
+    4 pass / 3 warn / 3 fail over 10 runs -> fire_rate = (3+3)/10 = 0.6 ->
+    instability_score = 0.8, which understates a true three-way split.
+    Hardcode 0.8 so a future refactor that silently changes the semantics
+    (e.g. swaps in entropy) is caught.
+    """
+    outputs = (
+        [_output(["X1"], [])] * 3              # 3 runs: X1 fails
+        + [_output([], [], warned=["X1"])] * 3  # 3 runs: X1 warns
+        + [_output([], ["X1"])] * 4             # 4 runs: X1 passes
+    )
+    stats = variance.tally_check("X1", outputs)
+    # Each run observes X1 in exactly one channel -> counts once.
+    assert stats.runs == 10
+    assert stats.fails == 3
+    assert stats.warnings == 3
+    assert stats.passes == 4
+    assert stats.fail_rate == pytest.approx(0.3)
+    assert stats.warning_rate == pytest.approx(0.3)
+    # fire_rate 0.6 -> 2 * min(0.6, 0.4) = 0.8 (the known understatement).
+    assert stats.instability_score == pytest.approx(0.8)
+
+
+def test_tally_check_unanimous_warn_is_stable() -> None:
+    """10/10 warnings, 0 pass, 0 fail -> always-fired is stable like
+    always-failed: instability_score 0.0."""
+    outputs = [_output([], [], warned=["C4"])] * 10
+    stats = variance.tally_check("C4", outputs)
+    assert stats.runs == 10
+    assert stats.warnings == 10
+    assert stats.passes == 0
+    assert stats.fails == 0
+    assert stats.warning_rate == 1.0
+    assert stats.instability_score == 0.0
+
+
+def test_tally_check_no_observations_has_zero_new_fields() -> None:
+    """runs == 0 must leave warning_rate/instability_score at 0.0 — no
+    division by zero on an unobserved check."""
+    outputs = [_output([], ["C1"])]  # never mentions ZZZ
+    stats = variance.tally_check("ZZZ", outputs)
+    assert stats.runs == 0
+    assert stats.warning_rate == 0.0
+    assert stats.instability_score == 0.0
+
+
 # --- aggregate_fixture + ranking ------------------------------------------
 
 def test_aggregate_fixture_records_verdicts() -> None:
@@ -223,6 +360,76 @@ def test_rank_checks_worst_first_sorts_by_flip_then_rate() -> None:
     assert [s.check_id for s in ranked] == ["C4", "C2", "C1"]
 
 
+def test_rank_checks_worst_first_primary_key_is_instability() -> None:
+    """A pass<->warning flipper (high instab, flip=0) must outrank a
+    pass<->fail flipper of LOWER instability.
+
+    Under v1 (sort by flip_score) the fail-flipper would have sorted
+    first; v1.1 sorts by instability_score, so the warning-flipper wins.
+    """
+    outputs = []
+    for i in range(10):
+        warned = []
+        passed = []
+        # WFLIP: 5 warn / 5 pass -> instab 1.0, flip 0.0.
+        if i < 5:
+            warned.append("WFLIP")
+        else:
+            passed.append("WFLIP")
+        # FFLIP: 3 fail / 7 pass -> flip 0.6, instab 0.6 (lower).
+        failed = ["FFLIP"] if i < 3 else []
+        if i >= 3:
+            passed.append("FFLIP")
+        # STABLE: unanimous pass -> instab 0.0.
+        passed.append("STABLE")
+        outputs.append(_output(failed, passed, warned=warned))
+
+    stats = variance.aggregate_fixture(
+        "demo", outputs, check_ids=("WFLIP", "FFLIP", "STABLE"),
+    )
+    wflip = stats.checks["WFLIP"]
+    fflip = stats.checks["FFLIP"]
+    # Sanity: the warning flipper is invisible to flip_score but noisier
+    # than the fail flipper on instability_score.
+    assert wflip.flip_score == 0.0
+    assert wflip.instability_score == pytest.approx(1.0)
+    assert fflip.instability_score == pytest.approx(0.6)
+
+    ranked = variance.rank_checks_worst_first(stats)
+    assert [s.check_id for s in ranked] == ["WFLIP", "FFLIP", "STABLE"]
+
+
+def test_rank_checks_worst_first_tie_breaks_on_fail_rate() -> None:
+    """Equal instability_score -> the gating (higher fail_rate) check first.
+
+    GATE: 4 fail / 6 pass -> fire_rate 0.4, instab 0.8, fail_rate 0.4.
+    WARN: 4 warn / 6 pass -> fire_rate 0.4, instab 0.8, fail_rate 0.0.
+    Same instability; GATE sorts first because it can actually reject.
+    """
+    outputs = []
+    for i in range(10):
+        failed = ["GATE"] if i < 4 else []
+        warned = ["WARN"] if i < 4 else []
+        passed = []
+        if i >= 4:
+            passed.append("GATE")
+            passed.append("WARN")
+        outputs.append(_output(failed, passed, warned=warned))
+
+    stats = variance.aggregate_fixture(
+        "demo", outputs, check_ids=("GATE", "WARN"),
+    )
+    gate = stats.checks["GATE"]
+    warn = stats.checks["WARN"]
+    assert gate.instability_score == pytest.approx(0.8)
+    assert warn.instability_score == pytest.approx(0.8)
+    assert gate.fail_rate == pytest.approx(0.4)
+    assert warn.fail_rate == 0.0
+
+    ranked = variance.rank_checks_worst_first(stats)
+    assert [s.check_id for s in ranked] == ["GATE", "WARN"]
+
+
 # --- JSON payload ----------------------------------------------------------
 
 def test_build_json_payload_serializes_round_trip() -> None:
@@ -263,6 +470,45 @@ def test_write_json_dump_creates_file(tmp_path) -> None:
     assert parsed["fixtures"][0]["fixture_name"] == "demo"
 
 
+def test_check_stats_to_dict_includes_new_fields_rounded() -> None:
+    """to_dict must carry warning_rate and instability_score, rounded to
+    4 places like fail_rate/flip_score."""
+    # 1 warn / 2 pass over 3 runs -> warning_rate = 1/3 (repeating), so
+    # rounding to 4 places is observable: 0.3333. fire_rate = 1/3 ->
+    # instability_score = 2/3 -> 0.6667.
+    outputs = [_output([], [], warned=["C4"])] + [_output([], ["C4"])] * 2
+    stats = variance.tally_check("C4", outputs)
+    d = stats.to_dict()
+    assert "warning_rate" in d
+    assert "instability_score" in d
+    assert d["warning_rate"] == round(stats.warning_rate, 4) == 0.3333
+    assert d["instability_score"] == round(stats.instability_score, 4) == 0.6667
+
+
+def test_build_json_payload_schema_version_is_2() -> None:
+    """v1.1 bumped the additive schema to 2."""
+    outputs = [_output([], ["C4"])] * 3
+    stats = variance.aggregate_fixture("demo", outputs, check_ids=("C4",))
+    payload = report.build_json_payload([stats], mode="dry", k=3)
+    assert payload["schema_version"] == 2
+
+
+def test_build_json_payload_round_trip_preserves_new_fields() -> None:
+    """A noisy check's warning_rate and instability_score must survive a
+    json.dumps/loads round-trip."""
+    # 3 warn / 7 pass -> warning_rate 0.3, instability_score 0.6.
+    outputs = (
+        [_output([], [], warned=["C4"])] * 3
+        + [_output([], ["C4"])] * 7
+    )
+    stats = variance.aggregate_fixture("noisy", outputs, check_ids=("C4",))
+    payload = report.build_json_payload([stats], mode="dry", k=10, seed=42)
+    restored = json.loads(json.dumps(payload))
+    c4 = restored["fixtures"][0]["checks"]["C4"]
+    assert c4["warning_rate"] == pytest.approx(0.3, rel=1e-3)
+    assert c4["instability_score"] == pytest.approx(0.6, rel=1e-3)
+
+
 # --- Text report formatting ------------------------------------------------
 
 def test_format_text_report_shows_noisy_checks() -> None:
@@ -281,6 +527,31 @@ def test_format_text_report_shows_noisy_checks() -> None:
     assert "C4" in text
     # C1 is unanimous pass — should be collapsed into the stable footer.
     assert "stable rows hidden" in text
+
+
+def test_format_text_report_surfaces_pass_warning_flipper() -> None:
+    """End-to-end proof v1.1 fixed the report-layer blindness: a pure
+    pass<->warning flipper (flip_score 0) must render as a row, while a
+    genuinely stable check is collapsed into the footer count."""
+    outputs = []
+    for i in range(10):
+        # C4: 5 warn / 5 pass, 0 fails -> instab 1.0 but flip 0.0.
+        warned = ["C4"] if i < 5 else []
+        passed = ["C1"] if i < 5 else ["C4", "C1"]
+        outputs.append(_output([], passed, warned=warned))
+
+    stats = variance.aggregate_fixture(
+        "demo", outputs, check_ids=("C1", "C4"),
+    )
+    text = report.format_text_report([stats])
+    # The new tier-agnostic column header is present.
+    assert "instab" in text
+    # The warning-flipper is NOT collapsed — it renders as a row.
+    assert "C4" in text
+    # The stable check is collapsed; exactly one stable row hidden (C1).
+    assert "stable rows hidden: 1" in text
+    # And C1 itself does not appear as a printed row.
+    assert "C1" not in text
 
 
 # --- Dry-mode runner end-to-end --------------------------------------------
@@ -319,11 +590,10 @@ def test_dry_runner_noise_profile_shows_up_for_known_flip_fixture() -> None:
     pass<->fail split. The harness still records the instability via the
     per-tier counts.
 
-    NOTE (follow-up for the owner): the headline ``flip_score`` is
-    fails-only, so it now reads 0.0 for a pass<->warning-flipping C4 and
-    the report would file it under "stable". A future harness revision
-    should add a tier-agnostic instability metric (or a ``warning_rate``)
-    so warning-tier noise on C1-C5/C7 is surfaced, not hidden."""
+    This test locks the Session-34 fix: the tier-agnostic
+    ``instability_score`` (and ``warning_rate``) surface exactly the
+    pass<->warning noise that the fails-only ``flip_score`` cannot see —
+    ``flip_score`` reads 0.0 while ``instability_score`` is positive."""
     target = "str_20260602_fb_01"
     results = runner.run_all(
         k=20, real=False,
@@ -343,6 +613,14 @@ def test_dry_runner_noise_profile_shows_up_for_known_flip_fixture() -> None:
     assert 0 < c4.warnings < 20, c4
     assert 0 < c4.passes < 20, c4
     assert c4.warnings + c4.passes == 20, c4
+    # The fails-only flip_score is blind to a pass<->warning flip...
+    assert c4.flip_score == 0.0, c4
+    # ...but the tier-agnostic instability_score surfaces it.
+    assert c4.warning_rate == c4.warnings / 20, c4
+    assert c4.instability_score == pytest.approx(
+        variance.instability_score(c4.warnings / 20),
+    ), c4
+    assert c4.instability_score > 0.0, c4
 
 
 def test_dry_runner_clean_fixture_stable_pass() -> None:
