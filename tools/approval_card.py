@@ -40,7 +40,12 @@ _PLATFORM_BADGES = {
 
 _MAX_CAPTION_LEN = 2900
 _MAX_FIRST_COMMENT_LEN = 200
+_MAX_WARNING_TEXT_LEN = 280
 _CHANNEL_HISTORY_LIMIT = 50
+
+# Slack mrkdwn section text caps at 3000 chars; stop well short so the
+# assembled warning block can never trip the API limit.
+_MAX_WARNING_BLOCK_LEN = 2800
 
 _RESCHEDULE_TAG_RE = re.compile(r"\[RESCHEDULED:\s*(\d+)\]")
 
@@ -71,6 +76,98 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
+
+
+def _parse_critic_notes(raw: Any) -> dict | None:
+    """Parse the row's ``critic_notes`` JSON string defensively.
+
+    Returns the parsed dict, or ``None`` on any missing/empty/malformed
+    value so the card can never raise while rendering the Critic block.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _critic_block(row: dict) -> dict | None:
+    """Build the Critic section block from a row, or ``None`` to omit it.
+
+    Reads the structured Critic output from ``critic_notes`` (JSON) and the
+    verdict from ``critic_score``. Renders flagged warnings (with their
+    fix instructions) for the owner to review, a clean line when the Critic
+    ran with no warnings, or nothing at all when the Critic never ran.
+    """
+    critic_score = (row.get("critic_score") or "").strip()
+    notes = _parse_critic_notes(row.get("critic_notes"))
+
+    if notes is None:
+        # Critic output absent or unparseable. Only claim "clean" if the
+        # Critic demonstrably ran (a score is present); otherwise omit.
+        if not critic_score:
+            return None
+        return {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"✅ *Critic: clean* (score: {critic_score})",
+            },
+        }
+
+    warnings = notes.get("warnings") or []
+    if not isinstance(warnings, list):
+        warnings = []
+
+    if not warnings:
+        if not critic_score:
+            return None
+        return {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"✅ *Critic: clean* (score: {critic_score})",
+            },
+        }
+
+    score_suffix = f" (score: {critic_score})" if critic_score else ""
+    header = (
+        f"⚠️ *Critic — {len(warnings)} flagged for your review*{score_suffix}"
+    )
+    lines: list[str] = [header]
+    truncated = False
+    for w in warnings:
+        if not isinstance(w, dict):
+            continue
+        check_id = str(w.get("check_id", "") or "").strip() or "—"
+        description = _truncate(
+            str(w.get("description", "") or "").strip(),
+            _MAX_WARNING_TEXT_LEN,
+        )
+        bullet = f"• *{check_id}* — {description}"
+        fix = _truncate(
+            str(w.get("fix_instruction", "") or "").strip(),
+            _MAX_WARNING_TEXT_LEN,
+        )
+        candidate = bullet + (f"\n    ↳ _{fix}_" if fix else "")
+        # Stop before the assembled text could exceed Slack's section limit.
+        if (
+            sum(len(ln) + 1 for ln in lines) + len(candidate) + 1
+            > _MAX_WARNING_BLOCK_LEN
+        ):
+            truncated = True
+            break
+        lines.append(candidate)
+
+    if truncated:
+        lines.append("…(more warnings — see sheet)")
+
+    return {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+    }
 
 
 def build_approval_blocks(row: dict) -> tuple[str, list[dict]]:
@@ -107,6 +204,10 @@ def build_approval_blocks(row: dict) -> tuple[str, list[dict]]:
             "type": "section",
             "text": {"type": "mrkdwn", "text": caption},
         })
+
+    critic_block = _critic_block(row)
+    if critic_block is not None:
+        blocks.append(critic_block)
 
     media_lines: list[str] = []
     media_format_used = (row.get("media_format_used") or "").strip()

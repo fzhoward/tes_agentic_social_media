@@ -822,14 +822,18 @@ def test_merge_deterministic_takes_precedence() -> None:
 
 
 def test_merge_llm_can_add_new_failures() -> None:
-    """LLM-only failures (no deterministic counterpart) are kept."""
+    """LLM-only failures (no deterministic counterpart) are kept.
+
+    Uses a still-gating LLM check (F1) — C1-C4 now route to warnings and are
+    no longer suitable as a generic "kept failure" example.
+    """
     llm_result = {
         "failed_checks": [{
-            "check_id": "C1",
+            "check_id": "F1",
             "verdict_level": "soft_fail",
             "location": "caption",
-            "description": "Multiple ideas in one post",
-            "fix_instruction": "Focus on one idea.",
+            "description": "Caption does not serve the stated objective",
+            "fix_instruction": "Re-anchor the caption to the objective.",
         }],
         "passed_checks": [],
         "warnings": [],
@@ -840,7 +844,7 @@ def test_merge_llm_can_add_new_failures() -> None:
         deterministic_warnings=[],
         llm_result=llm_result,
     )
-    assert any(f["check_id"] == "C1" for f in merged["failed_checks"])
+    assert any(f["check_id"] == "F1" for f in merged["failed_checks"])
 
 
 def test_merge_blocks_llm_b2_hallucination() -> None:
@@ -1125,41 +1129,83 @@ def test_model_name_in_caption_case_and_punctuation_insensitive() -> None:
     assert critic._model_name_in_caption(caption, catalog_item) is True
 
 
-def test_merge_suppresses_c4_model_naming_when_flag_set() -> None:
-    """C4 LLM failure with subreason=model_naming + suppress=True → dropped."""
-    llm_result = {
-        "failed_checks": [{
-            "check_id": "C4",
-            "category": "content_voice",
-            "verdict_level": "soft_fail",
-            "subreason": "model_naming",
-            "location": "caption",
-            "description": "Caption does not name the specific machine.",
-            "fix_instruction": "Name the John Deere 325G in the caption.",
-        }],
-        "passed_checks": [],
-        "warnings": [],
+def _c_failure(check_id: str, *, verdict_level: str = "soft_fail",
+               subreason: str | None = None) -> dict:
+    """Build an LLM C-tier failure entry for merge_results tests."""
+    entry = {
+        "check_id": check_id,
+        "category": "content_voice",
+        "verdict_level": verdict_level,
+        "location": f"caption — {check_id}",
+        "description": f"{check_id} concern.",
+        "fix_instruction": f"Fix {check_id}.",
     }
-    merged = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result,
-        suppress_c4_model_naming=True,
-    )
-    assert not any(f["check_id"] == "C4" for f in merged["failed_checks"])
+    if subreason is not None:
+        entry["subreason"] = subreason
+    return entry
 
 
-def test_merge_keeps_c4_specificity_even_when_flag_set() -> None:
-    """C4 LLM failure with subreason=specificity + suppress=True → KEPT."""
+def test_merge_c1_c4_soft_fail_route_to_warnings() -> None:
+    """C1-C4 are warning-tier: an LLM failure for any of them routes to
+    warnings and out of failed_checks, even when the LLM (following the
+    unchanged checklist) explicitly reports verdict_level='soft_fail'.
+
+    This is the regression guard for the Session 32 bug: the table value is
+    only a fallback in resolved_level, so without the code-side warning
+    guard an LLM-reported soft_fail would keep gating.
+    """
+    for check_id in ("C1", "C2", "C3", "C4"):
+        llm_result = {
+            "failed_checks": [_c_failure(check_id, verdict_level="soft_fail")],
+            "passed_checks": [],
+            "warnings": [],
+        }
+        merged = critic.merge_results(
+            deterministic_failures=[],
+            deterministic_passed=[],
+            deterministic_warnings=[],
+            llm_result=llm_result,
+        )
+        assert not any(
+            f["check_id"] == check_id for f in merged["failed_checks"]
+        ), f"{check_id} should not gate"
+        assert any(
+            w["check_id"] == check_id for w in merged["warnings"]
+        ), f"{check_id} should route to warnings"
+
+
+def test_merge_c4_specificity_routes_to_warning_regardless_of_subreason() -> None:
+    """C4 no longer gates on any subreason — model_naming and specificity
+    both route to warnings now that C4 is warning-tier."""
+    for subreason in ("model_naming", "specificity"):
+        llm_result = {
+            "failed_checks": [
+                _c_failure("C4", verdict_level="soft_fail", subreason=subreason),
+            ],
+            "passed_checks": [],
+            "warnings": [],
+        }
+        merged = critic.merge_results(
+            deterministic_failures=[],
+            deterministic_passed=[],
+            deterministic_warnings=[],
+            llm_result=llm_result,
+        )
+        assert not any(f["check_id"] == "C4" for f in merged["failed_checks"])
+        assert any(w["check_id"] == "C4" for w in merged["warnings"])
+
+
+def test_merge_warning_carries_fix_instruction_and_location() -> None:
+    """A C-tier failure routed to a warning preserves fix_instruction and
+    location so the approval card can show the owner how to fix it."""
     llm_result = {
         "failed_checks": [{
             "check_id": "C4",
             "category": "content_voice",
             "verdict_level": "soft_fail",
             "subreason": "specificity",
-            "location": "caption",
-            "description": "No job-type or site-condition specifics.",
+            "location": "sentence 2 of caption",
+            "description": "Reads general.",
             "fix_instruction": "Add a concrete job type and site condition.",
         }],
         "passed_checks": [],
@@ -1170,29 +1216,24 @@ def test_merge_keeps_c4_specificity_even_when_flag_set() -> None:
         deterministic_passed=[],
         deterministic_warnings=[],
         llm_result=llm_result,
-        suppress_c4_model_naming=True,
     )
-    c4 = [f for f in merged["failed_checks"] if f["check_id"] == "C4"]
+    c4 = [w for w in merged["warnings"] if w["check_id"] == "C4"]
     assert len(c4) == 1
-    # Subreason is carried through onto the merged entry.
-    assert c4[0].get("subreason") == "specificity"
+    assert c4[0]["fix_instruction"] == "Add a concrete job type and site condition."
+    assert c4[0]["location"] == "sentence 2 of caption"
 
 
-def test_merge_keeps_c4_model_naming_when_flag_not_set() -> None:
-    """C4 LLM failure with subreason=model_naming + suppress=False → KEPT.
-
-    Suppression must require the deterministic precondition; without the
-    flag, the LLM's C4 stands.
-    """
+def test_merge_soft_fail_check_still_gates() -> None:
+    """A genuinely soft_fail-tier LLM check (e.g. F1) still gates — the
+    warning guard only demotes table-designated warning-tier checks."""
     llm_result = {
         "failed_checks": [{
-            "check_id": "C4",
-            "category": "content_voice",
+            "check_id": "F1",
+            "category": "objective_alignment",
             "verdict_level": "soft_fail",
-            "subreason": "model_naming",
             "location": "caption",
-            "description": "Caption does not name the specific machine.",
-            "fix_instruction": "Name the John Deere 325G in the caption.",
+            "description": "Does not serve the stated objective.",
+            "fix_instruction": "Re-anchor the caption to the objective.",
         }],
         "passed_checks": [],
         "warnings": [],
@@ -1202,105 +1243,18 @@ def test_merge_keeps_c4_model_naming_when_flag_not_set() -> None:
         deterministic_passed=[],
         deterministic_warnings=[],
         llm_result=llm_result,
-        suppress_c4_model_naming=False,
     )
-    c4 = [f for f in merged["failed_checks"] if f["check_id"] == "C4"]
-    assert len(c4) == 1
-    assert c4[0].get("subreason") == "model_naming"
+    assert any(f["check_id"] == "F1" for f in merged["failed_checks"])
+    assert not any(w["check_id"] == "F1" for w in merged["warnings"])
 
 
-def test_merge_suppress_flag_does_not_affect_other_checks() -> None:
-    """suppress_c4_model_naming must not touch non-C4 failures, even if
-    they happen to carry a `subreason: model_naming` (which they shouldn't,
-    but the flag is C4-scoped by design)."""
-    llm_result = {
-        "failed_checks": [{
-            "check_id": "C1",
-            "category": "content_voice",
-            "verdict_level": "soft_fail",
-            "subreason": "model_naming",
-            "location": "caption",
-            "description": "Multiple unrelated topics.",
-            "fix_instruction": "Focus on one idea.",
-        }],
-        "passed_checks": [],
-        "warnings": [],
-    }
-    merged = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result,
-        suppress_c4_model_naming=True,
-    )
-    assert any(f["check_id"] == "C1" for f in merged["failed_checks"])
-
-
-def test_evaluate_draft_suppresses_c4_when_model_named(
+def test_evaluate_draft_c4_routes_to_warning_focus_and_no_focus(
     base_row, base_config,
 ) -> None:
-    """End-to-end: focus_equipment_id is set, model appears in the caption,
-    LLM emits a C4 model_naming failure → final verdict has no C4 failure."""
-    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
-    base_row[critic.CQ_CAPTION] = (
-        "Tight residential lot. The John Deere 325G fits the gate.\n\n"
-        "Zero tail swing.\n\n"
-        "No torn-up grass.\n\n"
-        "Operators stage the machine the night before whenever possible "
-        "so morning starts feel routine, not rushed.\n\n"
-        "Save this post for the next residential dig."
-    )
-    catalog_item = {
-        critic.CAT_ITEM_ID: "EQ-001",
-        critic.CAT_STATUS: "active",
-        critic.CAT_MODEL: "John Deere 325G",
-        critic.CAT_ITEM_NAME: "Compact Track Loader",
-    }
-
-    def fake_llm(
-        row, catalog_item, review_text,
-        pre_failures, pre_passed, pre_warnings,
-        revision_round, previous_critic_output, skills,
-    ):
-        return {
-            "queue_row_id": row[critic.CQ_ROW_ID],
-            "platform": row[critic.CQ_PLATFORM],
-            "revision_round": revision_round,
-            "verdict": "soft_fail",
-            "failed_checks": [{
-                "check_id": "C4",
-                "category": "content_voice",
-                "verdict_level": "soft_fail",
-                "subreason": "model_naming",
-                "location": "caption",
-                "description": "Caption is too generic about the machine.",
-                "fix_instruction": "Name the John Deere 325G.",
-            }],
-            "warnings": [],
-            "passed_checks": [],
-            "notes": "",
-        }
-
-    output = critic.evaluate_draft(
-        row=base_row,
-        catalog_item=catalog_item,
-        review_text="",
-        revision_round=1,
-        previous_critic_output=None,
-        config=base_config,
-        skills={},
-        llm_call=fake_llm,
-    )
-    failed_ids = {f["check_id"] for f in output["failed_checks"]}
-    assert "C4" not in failed_ids, output
-
-
-def test_evaluate_draft_keeps_c4_specificity_even_when_model_named(
-    base_row, base_config,
-) -> None:
-    """End-to-end: model is named, LLM emits C4 with subreason=specificity
-    → final verdict still includes the C4 failure (real specificity miss)."""
-    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
+    """End-to-end: a C4 specificity failure (verdict_level='soft_fail' from
+    the LLM) routes to a warning and does NOT gate — identically whether or
+    not focus_equipment_id is set. The pre-S32 distinction (focus rows gate
+    C4, no-focus rows downgrade) is gone; C4 is warning-tier on all rows."""
     base_row[critic.CQ_CAPTION] = (
         "Tight residential lot. The John Deere 325G fits the gate.\n\n"
         "Zero tail swing.\n\n"
@@ -1340,18 +1294,27 @@ def test_evaluate_draft_keeps_c4_specificity_even_when_model_named(
             "notes": "",
         }
 
-    output = critic.evaluate_draft(
-        row=base_row,
-        catalog_item=catalog_item,
-        review_text="",
-        revision_round=1,
-        previous_critic_output=None,
-        config=base_config,
-        skills={},
-        llm_call=fake_llm,
-    )
-    failed_ids = {f["check_id"] for f in output["failed_checks"]}
-    assert "C4" in failed_ids, output
+    # focus row (focus_equipment_id set, catalog item present) and no-focus
+    # row (empty focus, no catalog) must behave identically for C4.
+    for focus_id, catalog in (("EQ-001", catalog_item), ("", None)):
+        base_row[critic.CQ_FOCUS_EQUIPMENT] = focus_id
+        output = critic.evaluate_draft(
+            row=base_row,
+            catalog_item=catalog,
+            review_text="",
+            revision_round=1,
+            previous_critic_output=None,
+            config=base_config,
+            skills={},
+            llm_call=fake_llm,
+        )
+        failed_ids = {f["check_id"] for f in output["failed_checks"]}
+        warning_ids = {w["check_id"] for w in output["warnings"]}
+        assert "C4" not in failed_ids, (focus_id, output)
+        assert "C4" in warning_ids, (focus_id, output)
+        # fix_instruction survives onto the routed warning.
+        c4_warn = next(w for w in output["warnings"] if w["check_id"] == "C4")
+        assert c4_warn["fix_instruction"] == "Add concrete job type and site detail."
 
 
 def test_system_message_c4_subreason_instruction_present(base_row) -> None:
@@ -2047,167 +2010,53 @@ def test_evaluate_draft_c5_only_passes(base_row, base_config) -> None:
     assert any(w["check_id"] == "C5" for w in output["warnings"])
 
 
-def test_merge_c4_no_focus_downgrade_routes_to_warning() -> None:
-    """C4 specificity failure on a no-focus row → warning, not failed."""
-    llm_result = {
-        "failed_checks": [{
-            "check_id": "C4",
-            "category": "content_voice",
-            "verdict_level": "soft_fail",
-            "subreason": "specificity",
-            "location": "caption",
-            "description": "No concrete job type or site condition.",
-            "fix_instruction": "Add a specific job type or site detail.",
-        }],
-        "passed_checks": [],
-        "warnings": [],
-    }
-    merged = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result,
-        no_focus_row=True,
-    )
-    assert not any(f["check_id"] == "C4" for f in merged["failed_checks"])
-    assert any(w["check_id"] == "C4" for w in merged["warnings"])
+def test_merge_c3_c4_route_to_warnings_no_focus_context() -> None:
+    """C3 and C4 route to warnings regardless of any focus context. The
+    no-focus-vs-focus distinction was removed in S32 — merge_results no
+    longer takes a focus flag and treats C3/C4 as warning-tier always."""
+    for check_id in ("C3", "C4"):
+        llm_result = {
+            "failed_checks": [_c_failure(check_id, verdict_level="soft_fail")],
+            "passed_checks": [],
+            "warnings": [],
+        }
+        merged = critic.merge_results(
+            deterministic_failures=[],
+            deterministic_passed=[],
+            deterministic_warnings=[],
+            llm_result=llm_result,
+        )
+        assert not any(
+            f["check_id"] == check_id for f in merged["failed_checks"]
+        )
+        assert any(w["check_id"] == check_id for w in merged["warnings"])
 
 
-def test_merge_c4_focus_row_still_gates() -> None:
-    """C4 specificity failure on a focus row → soft_fail (gates)."""
-    llm_result = {
-        "failed_checks": [{
-            "check_id": "C4",
-            "category": "content_voice",
-            "verdict_level": "soft_fail",
-            "subreason": "specificity",
-            "location": "caption",
-            "description": "No concrete job type or site condition.",
-            "fix_instruction": "Add a specific job type or site detail.",
-        }],
-        "passed_checks": [],
-        "warnings": [],
-    }
-    merged = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result,
-        no_focus_row=False,
-    )
-    c4 = [f for f in merged["failed_checks"] if f["check_id"] == "C4"]
-    assert len(c4) == 1
-    assert c4[0]["verdict_level"] == "soft_fail"
-
-
-def test_merge_c3_no_focus_downgrade_routes_to_warning() -> None:
-    """C3 swap-test failure on a no-focus row → warning, not failed."""
-    llm_result = {
-        "failed_checks": [{
-            "check_id": "C3",
-            "category": "content_voice",
-            "verdict_level": "soft_fail",
-            "location": "caption",
-            "description": "A competitor could paste their name in.",
-            "fix_instruction": "Add a specific local detail.",
-        }],
-        "passed_checks": [],
-        "warnings": [],
-    }
-    merged = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result,
-        no_focus_row=True,
-    )
-    assert not any(f["check_id"] == "C3" for f in merged["failed_checks"])
-    assert any(w["check_id"] == "C3" for w in merged["warnings"])
-
-
-def test_merge_c3_focus_row_still_gates() -> None:
-    """C3 swap-test failure on a focus row → soft_fail (gates)."""
-    llm_result = {
-        "failed_checks": [{
-            "check_id": "C3",
-            "category": "content_voice",
-            "verdict_level": "soft_fail",
-            "location": "caption",
-            "description": "A competitor could paste their name in.",
-            "fix_instruction": "Add a specific local detail.",
-        }],
-        "passed_checks": [],
-        "warnings": [],
-    }
-    merged = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result,
-        no_focus_row=False,
-    )
-    c3 = [f for f in merged["failed_checks"] if f["check_id"] == "C3"]
-    assert len(c3) == 1
-    assert c3[0]["verdict_level"] == "soft_fail"
-
-
-def test_merge_no_focus_downgrade_composes_with_suppression() -> None:
-    """On a focus row where the model IS named, C4 model_naming is still
-    suppressed (composition with suppress_c4_model_naming, unchanged); and
-    a focus-row C4 specificity failure still gates regardless of the
-    no_focus_row flag being False."""
-    llm_result = {
-        "failed_checks": [
-            {
-                "check_id": "C4",
+def test_merge_c1_c4_route_to_warnings_without_explicit_verdict_level() -> None:
+    """When the LLM omits verdict_level, the table fallback still classifies
+    C1-C4 as warning-tier and routes them out of failed_checks."""
+    for check_id in ("C1", "C2", "C3", "C4"):
+        llm_result = {
+            "failed_checks": [{
+                "check_id": check_id,
                 "category": "content_voice",
-                "verdict_level": "soft_fail",
-                "subreason": "model_naming",
                 "location": "caption",
-                "description": "Caption does not name the machine.",
-                "fix_instruction": "Name the John Deere 325G.",
-            },
-        ],
-        "passed_checks": [],
-        "warnings": [],
-    }
-    # Focus row (no_focus_row=False) + suppress flag set: the model_naming
-    # failure should still drop.
-    merged = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result,
-        suppress_c4_model_naming=True,
-        no_focus_row=False,
-    )
-    assert not any(f["check_id"] == "C4" for f in merged["failed_checks"])
-
-    # Focus row + suppression OFF + specificity subreason → still gates.
-    llm_result2 = {
-        "failed_checks": [{
-            "check_id": "C4",
-            "category": "content_voice",
-            "verdict_level": "soft_fail",
-            "subreason": "specificity",
-            "location": "caption",
-            "description": "No job-type specifics.",
-            "fix_instruction": "Add a concrete job type.",
-        }],
-        "passed_checks": [],
-        "warnings": [],
-    }
-    merged2 = critic.merge_results(
-        deterministic_failures=[],
-        deterministic_passed=[],
-        deterministic_warnings=[],
-        llm_result=llm_result2,
-        suppress_c4_model_naming=False,
-        no_focus_row=False,
-    )
-    c4 = [f for f in merged2["failed_checks"] if f["check_id"] == "C4"]
-    assert len(c4) == 1
-    assert c4[0]["verdict_level"] == "soft_fail"
+                "description": f"{check_id} concern.",
+                "fix_instruction": f"Fix {check_id}.",
+            }],
+            "passed_checks": [],
+            "warnings": [],
+        }
+        merged = critic.merge_results(
+            deterministic_failures=[],
+            deterministic_passed=[],
+            deterministic_warnings=[],
+            llm_result=llm_result,
+        )
+        assert not any(
+            f["check_id"] == check_id for f in merged["failed_checks"]
+        )
+        assert any(w["check_id"] == check_id for w in merged["warnings"])
 
 
 def test_evaluate_draft_no_focus_c4_c5_route_to_warnings(
@@ -2270,11 +2119,12 @@ def test_evaluate_draft_no_focus_c4_c5_route_to_warnings(
     assert "C5" in warning_ids
 
 
-def test_evaluate_draft_focus_row_c4_specificity_still_gates(
+def test_evaluate_draft_c6_still_gates(
     base_row, base_config,
 ) -> None:
-    """End-to-end focus row: LLM emits C4 specificity → final verdict
-    soft_fail (the surviving gate)."""
+    """C6 (cheap-price positioning) stays soft_fail in S32 — an LLM C6
+    failure still gates the verdict to soft_fail. This confirms the warning
+    demotion is scoped to C1-C4 and did not loosen C6."""
     base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
     catalog_item = {
         critic.CAT_ITEM_ID: "EQ-001",
@@ -2294,13 +2144,12 @@ def test_evaluate_draft_focus_row_c4_specificity_still_gates(
             "revision_round": revision_round,
             "verdict": "soft_fail",
             "failed_checks": [{
-                "check_id": "C4",
+                "check_id": "C6",
                 "category": "content_voice",
                 "verdict_level": "soft_fail",
-                "subreason": "specificity",
                 "location": "caption",
-                "description": "No job-type specifics.",
-                "fix_instruction": "Add a concrete job type or condition.",
+                "description": "Positions the business as the cheapest option.",
+                "fix_instruction": "Drop the cheap-price framing.",
             }],
             "warnings": [],
             "passed_checks": [],
@@ -2318,15 +2167,15 @@ def test_evaluate_draft_focus_row_c4_specificity_still_gates(
         llm_call=fake_llm,
     )
     assert output["verdict"] == "soft_fail", output
-    assert any(f["check_id"] == "C4" for f in output["failed_checks"])
+    assert any(f["check_id"] == "C6" for f in output["failed_checks"])
 
 
-def test_focus_row_c3_soft_fail_escalates_at_round_3(
+def test_c6_soft_fail_escalates_at_round_3(
     base_row, base_config,
 ) -> None:
-    """The escalation logic is unchanged: a focus-row C3/C4 soft_fail at
-    revision_round 3 still escalates to hard_fail (surviving gates still
-    flow through the escalation path)."""
+    """The escalation logic is unchanged: a surviving soft_fail (C6) at
+    revision_round 3 still escalates to hard_fail. (C1-C4 can no longer
+    reach this path since they route to warnings.)"""
     base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
     catalog_item = {
         critic.CAT_ITEM_ID: "EQ-001",
@@ -2346,12 +2195,12 @@ def test_focus_row_c3_soft_fail_escalates_at_round_3(
             "revision_round": revision_round,
             "verdict": "soft_fail",
             "failed_checks": [{
-                "check_id": "C3",
+                "check_id": "C6",
                 "category": "content_voice",
                 "verdict_level": "soft_fail",
                 "location": "caption",
-                "description": "Swap-test fails.",
-                "fix_instruction": "Add a specific local detail.",
+                "description": "Positions the business as the cheapest option.",
+                "fix_instruction": "Drop the cheap-price framing.",
             }],
             "warnings": [],
             "passed_checks": [],

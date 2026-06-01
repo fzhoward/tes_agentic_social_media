@@ -311,8 +311,19 @@ def test_dry_runner_reproduces_with_seed() -> None:
 
 def test_dry_runner_noise_profile_shows_up_for_known_flip_fixture() -> None:
     """The Session-27 fixture is scripted to flip C4; with K=20 it should
-    show fail_rate strictly between 0 and 1 — exercising the harness's
-    core purpose end-to-end."""
+    show that instability end-to-end.
+
+    Since Session 32 demoted C1-C4 to warning-tier, an LLM C4 failure now
+    routes to ``warnings`` instead of ``failed_checks``. The known flip
+    therefore manifests as a pass<->warning split (fails stays 0), not a
+    pass<->fail split. The harness still records the instability via the
+    per-tier counts.
+
+    NOTE (follow-up for the owner): the headline ``flip_score`` is
+    fails-only, so it now reads 0.0 for a pass<->warning-flipping C4 and
+    the report would file it under "stable". A future harness revision
+    should add a tier-agnostic instability metric (or a ``warning_rate``)
+    so warning-tier noise on C1-C5/C7 is surfaced, not hidden."""
     target = "str_20260602_fb_01"
     results = runner.run_all(
         k=20, real=False,
@@ -325,11 +336,13 @@ def test_dry_runner_noise_profile_shows_up_for_known_flip_fixture() -> None:
     )
     c4 = stats.checks["C4"]
     assert c4.runs == 20
-    # With p=0.5 over K=20, fail_rate must be strictly between 0 and 1
-    # in the overwhelming majority of seeds; the seed is fixed so this
-    # is a deterministic assertion.
-    assert 0.0 < c4.fail_rate < 1.0, c4
-    assert c4.flip_score > 0.5, c4
+    assert c4.verdict_tier == "warning", c4
+    # C4 no longer gates — the noise is a pass<->warning split, with every
+    # observed run landing in exactly one of the two tiers.
+    assert c4.fails == 0, c4
+    assert 0 < c4.warnings < 20, c4
+    assert 0 < c4.passes < 20, c4
+    assert c4.warnings + c4.passes == 20, c4
 
 
 def test_dry_runner_clean_fixture_stable_pass() -> None:

@@ -340,6 +340,97 @@ def test_cli_reschedule_not_dry_run(monkeypatch, capsys):
     capsys.readouterr()  # drain output
 
 
+# ---------------------------------------------------------------------------
+# 12-15: Critic block rendering
+# ---------------------------------------------------------------------------
+
+def _critic_notes(warnings: list[dict]) -> str:
+    return json.dumps({
+        "revision_round": 1,
+        "failed_checks": [],
+        "warnings": warnings,
+        "passed_checks": ["B1", "B2"],
+        "notes": "",
+    })
+
+
+def test_critic_block_warnings_with_fix_instruction():
+    warnings = [
+        {
+            "check_id": "C4",
+            "description": "Caption is generic about the featured machine.",
+            "fix_instruction": "Name the mini excavator and tie it to a job.",
+            "location": "caption body",
+        },
+        {
+            "check_id": "W1",
+            "description": "No confirmed media asset attached.",
+        },
+    ]
+    row = _base_row(
+        critic_score="soft_fail",
+        critic_notes=_critic_notes(warnings),
+    )
+    _, blocks = approval_card.build_approval_blocks(row)
+    text = _flatten_text(blocks)
+    assert "Critic — 2 flagged for your review" in text
+    assert "(score: soft_fail)" in text
+    assert "*C4*" in text and "*W1*" in text
+    # fix_instruction renders as an indented italic sub-line
+    assert "↳ _Name the mini excavator and tie it to a job._" in text
+    # the warning with no fix_instruction has no sub-line arrow for itself
+    assert text.count("↳") == 1
+
+
+def test_critic_block_clean_row():
+    row = _base_row(
+        critic_score="pass",
+        critic_notes=_critic_notes([]),
+    )
+    _, blocks = approval_card.build_approval_blocks(row)
+    text = _flatten_text(blocks)
+    assert "✅ *Critic: clean* (score: pass)" in text
+    assert "flagged for your review" not in text
+
+
+def test_critic_block_omitted_when_critic_did_not_run():
+    # Empty critic_notes AND no critic_score → no Critic block at all.
+    row = _base_row(critic_score="", critic_notes="")
+    _, blocks = approval_card.build_approval_blocks(row)
+    text = _flatten_text(blocks)
+    assert "Critic" not in text
+    assert approval_card._critic_block(row) is None
+
+
+def test_critic_block_unparseable_notes_with_score_renders_clean():
+    # Malformed JSON but a score present → treat as clean (Critic ran).
+    row = _base_row(critic_score="pass", critic_notes="{not valid json")
+    block = approval_card._critic_block(row)
+    assert block is not None
+    assert "Critic: clean" in block["text"]["text"]
+
+
+def test_critic_block_truncates_oversized_warning_list():
+    # Many long warnings must not exceed Slack's section text limit.
+    warnings = [
+        {
+            "check_id": f"C{i}",
+            "description": "x" * 500,
+            "fix_instruction": "y" * 500,
+        }
+        for i in range(40)
+    ]
+    row = _base_row(
+        critic_score="soft_fail",
+        critic_notes=_critic_notes(warnings),
+    )
+    block = approval_card._critic_block(row)
+    assert block is not None
+    section_text = block["text"]["text"]
+    assert len(section_text) <= 3000
+    assert "…(more warnings — see sheet)" in section_text
+
+
 def test_cli_default_path_unchanged(monkeypatch, capsys):
     """Regression: invoking with neither --reschedule nor --row-id calls
     post_pending_approvals."""

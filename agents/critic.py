@@ -260,8 +260,8 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
     "B4": "soft_fail", "B5": "soft_fail", "B6": "soft_fail",
     "B7": "soft_fail", "B8": "soft_fail", "B9": "soft_fail",
     "B10": "soft_fail", "B11": "soft_fail",
-    "C1": "soft_fail", "C2": "soft_fail", "C3": "soft_fail",
-    "C4": "soft_fail", "C5": "warning", "C6": "soft_fail",
+    "C1": "warning", "C2": "warning", "C3": "warning",
+    "C4": "warning", "C5": "warning", "C6": "soft_fail",
     "C7": "warning",
     "D1": "soft_fail", "D2": "soft_fail", "D3": "soft_fail",
     "D4": "soft_fail", "D5": "soft_fail", "D6": "soft_fail",
@@ -1383,8 +1383,6 @@ def merge_results(
     deterministic_passed: list[str],
     deterministic_warnings: list[dict],
     llm_result: dict,
-    suppress_c4_model_naming: bool = False,
-    no_focus_row: bool = False,
 ) -> dict:
     """Merge deterministic results with the LLM's JSON output.
 
@@ -1392,22 +1390,6 @@ def merge_results(
     appears in deterministic_failures is final — even if the LLM tried to
     mark it passed. A check ID that the LLM flagged but deterministic did
     not evaluate is kept as the LLM's call.
-
-    ``suppress_c4_model_naming`` drops a single LLM C4 failure whose
-    ``subreason`` is ``"model_naming"``. This handles the reproducible
-    false negative where the model is already named in the caption but the
-    LLM still demands it be added. C4 failures with any other subreason
-    (including ``"specificity"`` or empty) are kept so genuine specificity
-    misses still gate.
-
-    ``no_focus_row`` downgrades C3 and C4 failures from soft_fail to
-    warning on rows where ``focus_equipment_id`` is empty. On a no-focus
-    row, the swap-test (C3) and the specificity standard (C4) become
-    judgment calls rather than gates — a generic-reading Educational Tip
-    or local-connection post should surface for human review without being
-    routed back to the Drafter. Composes with ``suppress_c4_model_naming``
-    (which is a no-op on no-focus rows since there is no featured model
-    to name).
     """
     det_failed_ids = {f["check_id"] for f in deterministic_failures}
     det_passed_ids = set(deterministic_passed)
@@ -1431,30 +1413,26 @@ def merge_results(
         # trust the code.
         if check_id in det_passed_ids:
             continue
-        # Suppress the C4 model-naming false negative: when the model is
-        # demonstrably named in the caption, drop a C4 failure whose
-        # subreason is "model_naming". Other subreasons (specificity,
-        # empty) are kept so real specificity misses still gate.
-        if (
-            check_id == "C4"
-            and suppress_c4_model_naming
-            and str(llm_fail.get("subreason", "")).strip().lower()
-            == "model_naming"
-        ):
-            continue
         resolved_level = str(
             llm_fail.get("verdict_level")
             or VERDICT_LEVEL_BY_CHECK.get(check_id, "soft_fail")
         )
-        # No-focus downgrade: on rows where focus_equipment_id is empty,
-        # C3 (swap-test) and C4 (specificity) become warning-tier — they
-        # surface for human review but do not gate the verdict.
-        if no_focus_row and check_id in {"C3", "C4"}:
+        # Tier handling is code-side: a check the table designates
+        # warning-tier always routes to warnings, even if the LLM reported
+        # it (per the checklist) as a soft_fail. This is what actually
+        # demotes the C-tier judgment checks — the table value alone is only
+        # a fallback when the LLM omits verdict_level, so without this guard
+        # an LLM-reported soft_fail would keep gating.
+        if VERDICT_LEVEL_BY_CHECK.get(check_id) == "warning":
             resolved_level = "warning"
         if resolved_level == "warning":
             llm_warnings_from_failures.append({
                 "check_id": check_id,
                 "description": str(llm_fail.get("description", "") or ""),
+                "fix_instruction": str(
+                    llm_fail.get("fix_instruction", "") or ""
+                ),
+                "location": str(llm_fail.get("location", "") or ""),
             })
             continue
         # Normalize the entry shape.
@@ -1511,6 +1489,8 @@ def merge_results(
         merged_warnings.append({
             "check_id": wid,
             "description": str(w.get("description", "") or ""),
+            "fix_instruction": str(w.get("fix_instruction", "") or ""),
+            "location": str(w.get("location", "") or ""),
         })
 
     return {
@@ -1588,17 +1568,11 @@ def evaluate_draft(
             revision_round, previous_critic_output, skills,
         )
 
-    suppress_c4 = _model_name_in_caption(
-        str(row.get(CQ_CAPTION, "") or ""), catalog_item,
-    )
-    no_focus = not str(row.get(CQ_FOCUS_EQUIPMENT, "") or "").strip()
     merged = merge_results(
         deterministic_failures=pre_failures,
         deterministic_passed=pre_passed,
         deterministic_warnings=pre_warnings,
         llm_result=llm_result,
-        suppress_c4_model_naming=suppress_c4,
-        no_focus_row=no_focus,
     )
     verdict, escalation_note = determine_verdict(
         merged["failed_checks"], revision_round,
