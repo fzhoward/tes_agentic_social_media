@@ -267,7 +267,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
     "D4": "soft_fail", "D5": "soft_fail", "D6": "soft_fail",
     "E1": "soft_fail", "E2": "soft_fail", "E3": "soft_fail",
     "E4": "soft_fail", "E5": "soft_fail",
-    "F1": "soft_fail", "F2": "soft_fail", "F3": "soft_fail",
+    "F1": "warning", "F2": "warning", "F3": "warning",
     "G1": "soft_fail", "G2": "soft_fail", "G3": "soft_fail",
     "W1": "warning", "W2": "warning", "W3": "warning",
 }

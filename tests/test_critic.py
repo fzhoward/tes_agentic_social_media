@@ -824,16 +824,16 @@ def test_merge_deterministic_takes_precedence() -> None:
 def test_merge_llm_can_add_new_failures() -> None:
     """LLM-only failures (no deterministic counterpart) are kept.
 
-    Uses a still-gating LLM check (F1) — C1-C4 now route to warnings and are
-    no longer suitable as a generic "kept failure" example.
+    Uses a still-gating LLM check (C6) — C1-C4 and F1-F3 now route to
+    warnings and are no longer suitable as a generic "kept failure" example.
     """
     llm_result = {
         "failed_checks": [{
-            "check_id": "F1",
+            "check_id": "C6",
             "verdict_level": "soft_fail",
             "location": "caption",
-            "description": "Caption does not serve the stated objective",
-            "fix_instruction": "Re-anchor the caption to the objective.",
+            "description": "Positions the business as the cheapest option.",
+            "fix_instruction": "Drop the cheap-price framing.",
         }],
         "passed_checks": [],
         "warnings": [],
@@ -844,7 +844,7 @@ def test_merge_llm_can_add_new_failures() -> None:
         deterministic_warnings=[],
         llm_result=llm_result,
     )
-    assert any(f["check_id"] == "F1" for f in merged["failed_checks"])
+    assert any(f["check_id"] == "C6" for f in merged["failed_checks"])
 
 
 def test_merge_blocks_llm_b2_hallucination() -> None:
@@ -1224,16 +1224,18 @@ def test_merge_warning_carries_fix_instruction_and_location() -> None:
 
 
 def test_merge_soft_fail_check_still_gates() -> None:
-    """A genuinely soft_fail-tier LLM check (e.g. F1) still gates — the
-    warning guard only demotes table-designated warning-tier checks."""
+    """A genuinely soft_fail-tier LLM check (e.g. C6) still gates — the
+    warning guard only demotes table-designated warning-tier checks. (F1-F3
+    were demoted to warning in a later session, so C6 is now the canonical
+    still-gating LLM check.)"""
     llm_result = {
         "failed_checks": [{
-            "check_id": "F1",
-            "category": "objective_alignment",
+            "check_id": "C6",
+            "category": "content_voice",
             "verdict_level": "soft_fail",
             "location": "caption",
-            "description": "Does not serve the stated objective.",
-            "fix_instruction": "Re-anchor the caption to the objective.",
+            "description": "Positions the business as the cheapest option.",
+            "fix_instruction": "Drop the cheap-price framing.",
         }],
         "passed_checks": [],
         "warnings": [],
@@ -1244,8 +1246,234 @@ def test_merge_soft_fail_check_still_gates() -> None:
         deterministic_warnings=[],
         llm_result=llm_result,
     )
-    assert any(f["check_id"] == "F1" for f in merged["failed_checks"])
-    assert not any(w["check_id"] == "F1" for w in merged["warnings"])
+    assert any(f["check_id"] == "C6" for f in merged["failed_checks"])
+    assert not any(w["check_id"] == "C6" for w in merged["warnings"])
+
+
+# --- F1-F3 objective-alignment demotion (later session) ---
+#
+# F1 (content type matches assignment), F2 (objective alignment), and F3
+# (advisory post delivers standalone value) were demoted from soft_fail to
+# warning. Like C1-C4, the checklist still tells the LLM these are soft_fail
+# (to keep its judgment strict), so the only thing that demotes them is the
+# code-side warning guard in merge_results. These tests lock that guard
+# against the exact failure mode S32 §2 caught: an LLM that reports its own
+# verdict_level='soft_fail'. A4/A5 still hard-gate the mechanical half of
+# objective alignment, so demoting F2 loses no non-negotiable enforcement.
+
+def _f_failure(check_id: str, *, verdict_level: str = "soft_fail") -> dict:
+    """Build an LLM F-tier (objective-alignment) failure entry."""
+    return {
+        "check_id": check_id,
+        "category": "objective_alignment",
+        "verdict_level": verdict_level,
+        "location": f"caption — {check_id}",
+        "description": f"{check_id} objective-alignment concern.",
+        "fix_instruction": f"Fix {check_id}.",
+    }
+
+
+def test_merge_f1_f3_soft_fail_route_to_warnings() -> None:
+    """F1-F3 are warning-tier: an LLM failure for any of them routes to
+    warnings and out of failed_checks, even when the LLM (following the
+    unchanged checklist) explicitly reports verdict_level='soft_fail'. The
+    table value is only a fallback in resolved_level, so this proves the
+    code-side warning guard fires — not the trivial omitted-verdict path."""
+    for check_id in ("F1", "F2", "F3"):
+        llm_result = {
+            "failed_checks": [_f_failure(check_id, verdict_level="soft_fail")],
+            "passed_checks": [],
+            "warnings": [],
+        }
+        merged = critic.merge_results(
+            deterministic_failures=[],
+            deterministic_passed=[],
+            deterministic_warnings=[],
+            llm_result=llm_result,
+        )
+        assert not any(
+            f["check_id"] == check_id for f in merged["failed_checks"]
+        ), f"{check_id} should not gate"
+        assert any(
+            w["check_id"] == check_id for w in merged["warnings"]
+        ), f"{check_id} should route to warnings"
+        # The routed warning must not drive the verdict to soft_fail.
+        verdict, _ = critic.determine_verdict(
+            merged["failed_checks"], revision_round=1,
+        )
+        assert verdict == "pass", f"{check_id} must not gate the verdict"
+
+
+def test_merge_f1_f3_route_to_warnings_without_explicit_verdict_level() -> None:
+    """When the LLM omits verdict_level, F1-F3 still resolve to warning via
+    VERDICT_LEVEL_BY_CHECK and route out of failed_checks (fallback path)."""
+    for check_id in ("F1", "F2", "F3"):
+        llm_result = {
+            "failed_checks": [{
+                "check_id": check_id,
+                "location": "caption",
+                "description": f"{check_id} concern.",
+                "fix_instruction": f"Fix {check_id}.",
+            }],
+            "passed_checks": [],
+            "warnings": [],
+        }
+        merged = critic.merge_results(
+            deterministic_failures=[],
+            deterministic_passed=[],
+            deterministic_warnings=[],
+            llm_result=llm_result,
+        )
+        assert not any(f["check_id"] == check_id for f in merged["failed_checks"])
+        assert any(w["check_id"] == check_id for w in merged["warnings"])
+
+
+def test_merge_f_warning_carries_fix_instruction_and_location() -> None:
+    """An F-tier failure routed to a warning preserves fix_instruction and
+    location so the approval card can show the owner how to fix it."""
+    for check_id in ("F1", "F2", "F3"):
+        llm_result = {
+            "failed_checks": [{
+                "check_id": check_id,
+                "category": "objective_alignment",
+                "verdict_level": "soft_fail",
+                "location": f"sentence 2 of caption ({check_id})",
+                "description": f"{check_id} reads off-objective.",
+                "fix_instruction": f"Re-anchor for {check_id}.",
+            }],
+            "passed_checks": [],
+            "warnings": [],
+        }
+        merged = critic.merge_results(
+            deterministic_failures=[],
+            deterministic_passed=[],
+            deterministic_warnings=[],
+            llm_result=llm_result,
+        )
+        warn = [w for w in merged["warnings"] if w["check_id"] == check_id]
+        assert len(warn) == 1
+        assert warn[0]["fix_instruction"] == f"Re-anchor for {check_id}."
+        assert warn[0]["location"] == f"sentence 2 of caption ({check_id})"
+
+
+def test_evaluate_draft_f2_routes_to_warning_not_gating(
+    base_row, base_config,
+) -> None:
+    """End-to-end: an F2 objective-alignment failure (LLM verdict_level=
+    'soft_fail') routes to a warning and the overall verdict is pass — F2 no
+    longer gates."""
+    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_STATUS: "active",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [{
+                "check_id": "F2",
+                "category": "objective_alignment",
+                "verdict_level": "soft_fail",
+                "location": "caption",
+                "description": "Caption drifts from the stated objective.",
+                "fix_instruction": "Re-anchor the caption to the objective.",
+            }],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=catalog_item,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    failed_ids = {f["check_id"] for f in output["failed_checks"]}
+    warning_ids = {w["check_id"] for w in output["warnings"]}
+    assert "F2" not in failed_ids, output
+    assert "F2" in warning_ids, output
+    assert output["verdict"] == "pass", output
+    f2_warn = next(w for w in output["warnings"] if w["check_id"] == "F2")
+    assert f2_warn["fix_instruction"] == "Re-anchor the caption to the objective."
+
+
+def test_evaluate_draft_f_demotion_does_not_loosen_c6(
+    base_row, base_config,
+) -> None:
+    """Guardrail: with both an F2 warning-tier failure and a C6 soft_fail in
+    the same LLM result, F2 routes to a warning while C6 still gates the
+    verdict to soft_fail. Proves the F demotion did not reach C6."""
+    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_STATUS: "active",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [
+                {
+                    "check_id": "F2",
+                    "category": "objective_alignment",
+                    "verdict_level": "soft_fail",
+                    "location": "caption",
+                    "description": "Off-objective.",
+                    "fix_instruction": "Re-anchor.",
+                },
+                {
+                    "check_id": "C6",
+                    "category": "content_voice",
+                    "verdict_level": "soft_fail",
+                    "location": "caption",
+                    "description": "Cheapest-option framing.",
+                    "fix_instruction": "Drop the cheap-price framing.",
+                },
+            ],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=catalog_item,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    failed_ids = {f["check_id"] for f in output["failed_checks"]}
+    warning_ids = {w["check_id"] for w in output["warnings"]}
+    assert "F2" in warning_ids and "F2" not in failed_ids, output
+    assert "C6" in failed_ids, output
+    assert output["verdict"] == "soft_fail", output
 
 
 def test_evaluate_draft_c4_routes_to_warning_focus_and_no_focus(
