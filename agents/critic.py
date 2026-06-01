@@ -245,7 +245,7 @@ CATEGORY_BY_CHECK: dict[str, str] = {
     "E1": "cta", "E2": "cta", "E3": "cta", "E4": "cta", "E5": "cta",
     # F — objective alignment
     "F1": "objective_alignment", "F2": "objective_alignment",
-    "F3": "objective_alignment", "F4": "objective_alignment",
+    "F3": "objective_alignment",
     # G — catalog
     "G1": "catalog", "G2": "catalog", "G3": "catalog",
     # W — warnings
@@ -267,7 +267,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
     "D4": "soft_fail", "D5": "soft_fail", "D6": "soft_fail",
     "E1": "soft_fail", "E2": "soft_fail", "E3": "soft_fail",
     "E4": "soft_fail", "E5": "soft_fail",
-    "F1": "soft_fail", "F2": "soft_fail", "F3": "soft_fail", "F4": "soft_fail",
+    "F1": "soft_fail", "F2": "soft_fail", "F3": "soft_fail",
     "G1": "soft_fail", "G2": "soft_fail", "G3": "soft_fail",
     "W1": "warning", "W2": "warning", "W3": "warning",
 }
@@ -1218,7 +1218,7 @@ def build_critic_messages(
         "(B9) are line- or character-level checks decided by code — never "
         "flag these yourself; defer entirely to the pre-check block. "
         "Focus your judgment on the checks that require reading "
-        "comprehension (C1-C7, F1-F4, G1) and any voice/content issues.\n"
+        "comprehension (C1-C7, F1-F3, G1) and any voice/content issues.\n"
         "5. Catalog cross-reference: if a catalog record is provided, every "
         "spec claim in the caption must match the catalog exactly. Flag "
         "any rounding or inflation as G3.\n"

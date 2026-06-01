@@ -99,7 +99,7 @@ Channel
 	Create tension and drive to the blog.
 	Do not give away the full how-to.
 	FB/IG Link Post
-	Create unresolved tension.
+	Give context that makes the linked page worth opening.
 	CTA points to first comment or link location.
 	FB/IG Advisory Post
 	Give one practical takeaway.

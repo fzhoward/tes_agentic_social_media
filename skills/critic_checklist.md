@@ -110,7 +110,6 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 | F1 | **Content type matches assignment.** The draft should match the content type the Strategist assigned (equipment spotlight, use-case scenario, educational tip, etc.). | Content Type Definitions |
 | F2 | **Objective alignment.** The overall tone, framing, and CTA (or absence of CTA) must align with the assigned objective (brand awareness or lead generation). | Brand voice: Post Objective Rules |
 | F3 | **Advisory post delivers standalone value.** If the post is an advisory/educational type, the reader should walk away with one useful takeaway without needing to click anything. | Brand voice: Advisory Post Rules |
-| F4 | **Link post withholds resolution.** If the post is a link post, it must create tension the linked content resolves. It must not contain how-to steps, checklists, or decision frameworks from the source content. | Brand voice: Link Post Rules |
 
 ### G. Catalog Verification (Soft Fail)
 

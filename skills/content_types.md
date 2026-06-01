@@ -264,7 +264,7 @@ When the Drafter receives a content type + objective assignment, it should apply
 
 - **Brand awareness objective** → Brand Awareness voice rules (looser tone, no conversion CTA, engagement CTA optional)
 - **Lead generation objective** → Lead Generation voice rules (direct tone, call or DM CTA required, CTA last, name the situation first)
-- **Advisory / educational content types** (Educational Tip, Comparison) → Advisory Post voice rules when standalone; Link Post voice rules when paired with a blog URL
+- **Advisory / educational content types** (Educational Tip, Comparison) → Advisory Post voice rules
 - **All content types** → Default content rules, formatting rules, banned language, trust and safety rules
 
 ## Changelog
