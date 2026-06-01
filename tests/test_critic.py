@@ -1946,3 +1946,427 @@ def test_system_message_c4_clause_mentions_empty_focus(base_row) -> None:
     assert "focus_equipment_id is empty" in system_msg
     assert "named machine model" in system_msg
     assert "site condition" in system_msg or "job type" in system_msg
+
+
+# --- Session 31: C-check fate decisions ---
+# C5 demoted to warning everywhere; C3/C4 demoted to warning on no-focus
+# rows; C1/C2/C6 still gate. See Session 31 prompt for the full rationale.
+
+
+def test_c5_verdict_level_is_warning() -> None:
+    """Registry sanity: after Session 31, C5 is warning-tier (was soft_fail)."""
+    assert critic.VERDICT_LEVEL_BY_CHECK["C5"] == "warning"
+
+
+def test_merge_routes_c5_to_warnings() -> None:
+    """LLM C5 failure routes to warnings, not failed_checks — same path as C7."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C5",
+            "category": "content_voice",
+            "verdict_level": "warning",
+            "location": "caption",
+            "description": "Bare 'North Florida' name-drop adds no meaning.",
+            "fix_instruction": "Either ground the location reference or drop it.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "C5" for f in merged["failed_checks"])
+    warning_ids = [w["check_id"] for w in merged["warnings"]]
+    assert "C5" in warning_ids
+
+
+def test_merge_routes_c5_to_warnings_via_registry_lookup() -> None:
+    """If LLM omits verdict_level on C5, the warning tier is resolved from
+    VERDICT_LEVEL_BY_CHECK and the entry still routes to warnings."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C5",
+            "location": "caption",
+            "description": "Geographic filler.",
+            "fix_instruction": "Tie the place name to a recognizable detail.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "C5" for f in merged["failed_checks"])
+    assert any(w["check_id"] == "C5" for w in merged["warnings"])
+
+
+def test_evaluate_draft_c5_only_passes(base_row, base_config) -> None:
+    """A draft whose only LLM-flagged issue is C5 → verdict `pass`."""
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [{
+                "check_id": "C5",
+                "category": "content_voice",
+                "verdict_level": "warning",
+                "location": "caption",
+                "description": "Geographic reference is filler.",
+                "fix_instruction": "Drop the bare North Florida mention.",
+            }],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=None,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    assert output["verdict"] == "pass", output
+    assert not any(f["check_id"] == "C5" for f in output["failed_checks"])
+    assert any(w["check_id"] == "C5" for w in output["warnings"])
+
+
+def test_merge_c4_no_focus_downgrade_routes_to_warning() -> None:
+    """C4 specificity failure on a no-focus row → warning, not failed."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C4",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "subreason": "specificity",
+            "location": "caption",
+            "description": "No concrete job type or site condition.",
+            "fix_instruction": "Add a specific job type or site detail.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        no_focus_row=True,
+    )
+    assert not any(f["check_id"] == "C4" for f in merged["failed_checks"])
+    assert any(w["check_id"] == "C4" for w in merged["warnings"])
+
+
+def test_merge_c4_focus_row_still_gates() -> None:
+    """C4 specificity failure on a focus row → soft_fail (gates)."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C4",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "subreason": "specificity",
+            "location": "caption",
+            "description": "No concrete job type or site condition.",
+            "fix_instruction": "Add a specific job type or site detail.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        no_focus_row=False,
+    )
+    c4 = [f for f in merged["failed_checks"] if f["check_id"] == "C4"]
+    assert len(c4) == 1
+    assert c4[0]["verdict_level"] == "soft_fail"
+
+
+def test_merge_c3_no_focus_downgrade_routes_to_warning() -> None:
+    """C3 swap-test failure on a no-focus row → warning, not failed."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C3",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "A competitor could paste their name in.",
+            "fix_instruction": "Add a specific local detail.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        no_focus_row=True,
+    )
+    assert not any(f["check_id"] == "C3" for f in merged["failed_checks"])
+    assert any(w["check_id"] == "C3" for w in merged["warnings"])
+
+
+def test_merge_c3_focus_row_still_gates() -> None:
+    """C3 swap-test failure on a focus row → soft_fail (gates)."""
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "C3",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "A competitor could paste their name in.",
+            "fix_instruction": "Add a specific local detail.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        no_focus_row=False,
+    )
+    c3 = [f for f in merged["failed_checks"] if f["check_id"] == "C3"]
+    assert len(c3) == 1
+    assert c3[0]["verdict_level"] == "soft_fail"
+
+
+def test_merge_no_focus_downgrade_composes_with_suppression() -> None:
+    """On a focus row where the model IS named, C4 model_naming is still
+    suppressed (composition with suppress_c4_model_naming, unchanged); and
+    a focus-row C4 specificity failure still gates regardless of the
+    no_focus_row flag being False."""
+    llm_result = {
+        "failed_checks": [
+            {
+                "check_id": "C4",
+                "category": "content_voice",
+                "verdict_level": "soft_fail",
+                "subreason": "model_naming",
+                "location": "caption",
+                "description": "Caption does not name the machine.",
+                "fix_instruction": "Name the John Deere 325G.",
+            },
+        ],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    # Focus row (no_focus_row=False) + suppress flag set: the model_naming
+    # failure should still drop.
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+        suppress_c4_model_naming=True,
+        no_focus_row=False,
+    )
+    assert not any(f["check_id"] == "C4" for f in merged["failed_checks"])
+
+    # Focus row + suppression OFF + specificity subreason → still gates.
+    llm_result2 = {
+        "failed_checks": [{
+            "check_id": "C4",
+            "category": "content_voice",
+            "verdict_level": "soft_fail",
+            "subreason": "specificity",
+            "location": "caption",
+            "description": "No job-type specifics.",
+            "fix_instruction": "Add a concrete job type.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged2 = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=[],
+        deterministic_warnings=[],
+        llm_result=llm_result2,
+        suppress_c4_model_naming=False,
+        no_focus_row=False,
+    )
+    c4 = [f for f in merged2["failed_checks"] if f["check_id"] == "C4"]
+    assert len(c4) == 1
+    assert c4[0]["verdict_level"] == "soft_fail"
+
+
+def test_evaluate_draft_no_focus_c4_c5_route_to_warnings(
+    base_row, base_config,
+) -> None:
+    """End-to-end no-focus row: LLM emits C4 specificity + C5 → final verdict
+    not gated, both routed to warnings."""
+    base_row[critic.CQ_FOCUS_EQUIPMENT] = ""  # no focus
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [
+                {
+                    "check_id": "C4",
+                    "category": "content_voice",
+                    "verdict_level": "soft_fail",
+                    "subreason": "specificity",
+                    "location": "caption",
+                    "description": "Reads general.",
+                    "fix_instruction": "Add a concrete decision frame.",
+                },
+                {
+                    "check_id": "C5",
+                    "category": "content_voice",
+                    "verdict_level": "warning",
+                    "location": "caption",
+                    "description": "Geographic filler.",
+                    "fix_instruction": "Ground or drop the place name.",
+                },
+            ],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=None,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    assert output["verdict"] == "pass", output
+    failed_ids = {f["check_id"] for f in output["failed_checks"]}
+    assert "C4" not in failed_ids
+    assert "C5" not in failed_ids
+    warning_ids = {w["check_id"] for w in output["warnings"]}
+    assert "C4" in warning_ids
+    assert "C5" in warning_ids
+
+
+def test_evaluate_draft_focus_row_c4_specificity_still_gates(
+    base_row, base_config,
+) -> None:
+    """End-to-end focus row: LLM emits C4 specificity → final verdict
+    soft_fail (the surviving gate)."""
+    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_STATUS: "active",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [{
+                "check_id": "C4",
+                "category": "content_voice",
+                "verdict_level": "soft_fail",
+                "subreason": "specificity",
+                "location": "caption",
+                "description": "No job-type specifics.",
+                "fix_instruction": "Add a concrete job type or condition.",
+            }],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=catalog_item,
+        review_text="",
+        revision_round=1,
+        previous_critic_output=None,
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    assert output["verdict"] == "soft_fail", output
+    assert any(f["check_id"] == "C4" for f in output["failed_checks"])
+
+
+def test_focus_row_c3_soft_fail_escalates_at_round_3(
+    base_row, base_config,
+) -> None:
+    """The escalation logic is unchanged: a focus-row C3/C4 soft_fail at
+    revision_round 3 still escalates to hard_fail (surviving gates still
+    flow through the escalation path)."""
+    base_row[critic.CQ_FOCUS_EQUIPMENT] = "EQ-001"
+    catalog_item = {
+        critic.CAT_ITEM_ID: "EQ-001",
+        critic.CAT_STATUS: "active",
+        critic.CAT_MODEL: "John Deere 325G",
+        critic.CAT_ITEM_NAME: "Compact Track Loader",
+    }
+
+    def fake_llm(
+        row, catalog_item, review_text,
+        pre_failures, pre_passed, pre_warnings,
+        revision_round, previous_critic_output, skills,
+    ):
+        return {
+            "queue_row_id": row[critic.CQ_ROW_ID],
+            "platform": row[critic.CQ_PLATFORM],
+            "revision_round": revision_round,
+            "verdict": "soft_fail",
+            "failed_checks": [{
+                "check_id": "C3",
+                "category": "content_voice",
+                "verdict_level": "soft_fail",
+                "location": "caption",
+                "description": "Swap-test fails.",
+                "fix_instruction": "Add a specific local detail.",
+            }],
+            "warnings": [],
+            "passed_checks": [],
+            "notes": "",
+        }
+
+    output = critic.evaluate_draft(
+        row=base_row,
+        catalog_item=catalog_item,
+        review_text="",
+        revision_round=3,
+        previous_critic_output={"failed_checks": []},
+        config=base_config,
+        skills={},
+        llm_call=fake_llm,
+    )
+    assert output["verdict"] == "hard_fail", output
+    assert "2 revision rounds" in output["notes"]

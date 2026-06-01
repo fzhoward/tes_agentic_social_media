@@ -261,7 +261,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
     "B7": "soft_fail", "B8": "soft_fail", "B9": "soft_fail",
     "B10": "soft_fail", "B11": "soft_fail",
     "C1": "soft_fail", "C2": "soft_fail", "C3": "soft_fail",
-    "C4": "soft_fail", "C5": "soft_fail", "C6": "soft_fail",
+    "C4": "soft_fail", "C5": "warning", "C6": "soft_fail",
     "C7": "warning",
     "D1": "soft_fail", "D2": "soft_fail", "D3": "soft_fail",
     "D4": "soft_fail", "D5": "soft_fail", "D6": "soft_fail",
@@ -1384,6 +1384,7 @@ def merge_results(
     deterministic_warnings: list[dict],
     llm_result: dict,
     suppress_c4_model_naming: bool = False,
+    no_focus_row: bool = False,
 ) -> dict:
     """Merge deterministic results with the LLM's JSON output.
 
@@ -1398,6 +1399,15 @@ def merge_results(
     LLM still demands it be added. C4 failures with any other subreason
     (including ``"specificity"`` or empty) are kept so genuine specificity
     misses still gate.
+
+    ``no_focus_row`` downgrades C3 and C4 failures from soft_fail to
+    warning on rows where ``focus_equipment_id`` is empty. On a no-focus
+    row, the swap-test (C3) and the specificity standard (C4) become
+    judgment calls rather than gates — a generic-reading Educational Tip
+    or local-connection post should surface for human review without being
+    routed back to the Drafter. Composes with ``suppress_c4_model_naming``
+    (which is a no-op on no-focus rows since there is no featured model
+    to name).
     """
     det_failed_ids = {f["check_id"] for f in deterministic_failures}
     det_passed_ids = set(deterministic_passed)
@@ -1436,6 +1446,11 @@ def merge_results(
             llm_fail.get("verdict_level")
             or VERDICT_LEVEL_BY_CHECK.get(check_id, "soft_fail")
         )
+        # No-focus downgrade: on rows where focus_equipment_id is empty,
+        # C3 (swap-test) and C4 (specificity) become warning-tier — they
+        # surface for human review but do not gate the verdict.
+        if no_focus_row and check_id in {"C3", "C4"}:
+            resolved_level = "warning"
         if resolved_level == "warning":
             llm_warnings_from_failures.append({
                 "check_id": check_id,
@@ -1576,12 +1591,14 @@ def evaluate_draft(
     suppress_c4 = _model_name_in_caption(
         str(row.get(CQ_CAPTION, "") or ""), catalog_item,
     )
+    no_focus = not str(row.get(CQ_FOCUS_EQUIPMENT, "") or "").strip()
     merged = merge_results(
         deterministic_failures=pre_failures,
         deterministic_passed=pre_passed,
         deterministic_warnings=pre_warnings,
         llm_result=llm_result,
         suppress_c4_model_naming=suppress_c4,
+        no_focus_row=no_focus,
     )
     verdict, escalation_note = determine_verdict(
         merged["failed_checks"], revision_round,
