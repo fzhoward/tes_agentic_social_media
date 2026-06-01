@@ -3,8 +3,8 @@
 Two outputs:
 
 * Text report — a per-fixture human-readable table, sorted worst-first
-  by flip score. This is what shows up in the terminal at the end of a
-  run and what we paste into the PR description.
+  by instability score (tier-agnostic). This is what shows up in the
+  terminal at the end of a run and what we paste into the PR description.
 * JSON dump — the full structured stats, stable across runs, suitable
   for diffing two harness runs after a prompt change. Written to
   ``evals/out/`` (gitignored) so we keep history locally without
@@ -23,9 +23,11 @@ from pathlib import Path
 from evals.variance import FixtureStats, rank_checks_worst_first
 
 
-# Rows with flip_score below this in the text report are summarised as a
-# single "N stable checks (flip_score=0)" line rather than printed one by
-# one. Keeps the worst-first table focused. Set to 0.0 to print all rows.
+# Rows with instability_score at or below this AND a unanimous fire_rate
+# (0.0 or 1.0) in the text report are summarised as a single "N stable
+# rows hidden" footer line rather than printed one by one. Keeps the
+# worst-first table focused. Set to 0.0 to collapse only truly-stable
+# rows (the default). The name is kept for back-compat with callers.
 TEXT_REPORT_FLIP_THRESHOLD: float = 0.0
 
 
@@ -38,10 +40,14 @@ def format_text_report(
     """Format every fixture's stats into a printable table.
 
     Each fixture gets a header (name + verdict histogram + overall
-    verdict flip score) followed by a per-check table sorted worst-first.
-    Checks with ``flip_score <= flip_threshold`` and ``fail_rate`` not in
-    {0.0, 1.0} are dropped — they are stable mid-rate cases we already
-    have a tally for via the JSON dump, and printing them is noise.
+    verdict flip score) followed by a per-check table sorted worst-first
+    by ``instability_score``. A row is hidden iff
+    ``instability_score <= flip_threshold`` and its ``fire_rate``
+    (``(fails + warnings) / runs``) is unanimous (0.0 or 1.0) — those are
+    stable checks we already have a tally for via the JSON dump, and
+    printing them is noise. The fire-rate test (not fail-rate) keeps a
+    check that flips pass<->warning visible even though its fail_rate is
+    pinned at 0.
 
     Checks the LLM never observed in any run are dropped entirely
     (runs == 0) — variance is undefined on no observations.
@@ -67,7 +73,7 @@ def format_text_report(
         lines.append(
             f"  {'check':<6}  {'tier':<10}  {'runs':>4}  "
             f"{'fails':>5}  {'pass':>4}  {'warn':>4}  "
-            f"{'fail_rate':>9}  {'flip':>5}"
+            f"{'fail_rate':>9}  {'flip':>5}  {'instab':>6}"
         )
 
         ranked = rank_checks_worst_first(stats)
@@ -75,9 +81,12 @@ def format_text_report(
         for check_stats in ranked:
             if check_stats.runs == 0:
                 continue
+            fire_rate = (
+                check_stats.fails + check_stats.warnings
+            ) / check_stats.runs
             if (
-                check_stats.flip_score <= flip_threshold
-                and check_stats.fail_rate in (0.0, 1.0)
+                check_stats.instability_score <= flip_threshold
+                and fire_rate in (0.0, 1.0)
             ):
                 continue
             if printed >= max_rows_per_fixture:
@@ -88,7 +97,8 @@ def format_text_report(
                 f"{check_stats.runs:>4}  {check_stats.fails:>5}  "
                 f"{check_stats.passes:>4}  {check_stats.warnings:>4}  "
                 f"{check_stats.fail_rate:>9.3f}  "
-                f"{check_stats.flip_score:>5.3f}"
+                f"{check_stats.flip_score:>5.3f}  "
+                f"{check_stats.instability_score:>6.3f}"
             )
             printed += 1
 
@@ -97,8 +107,8 @@ def format_text_report(
         observed = [s for s in stats.checks.values() if s.runs > 0]
         stable_count = sum(
             1 for s in observed
-            if s.flip_score <= flip_threshold
-            and s.fail_rate in (0.0, 1.0)
+            if s.instability_score <= flip_threshold
+            and ((s.fails + s.warnings) / s.runs) in (0.0, 1.0)
         )
         unobserved = len(stats.checks) - len(observed)
         lines.append(
@@ -109,8 +119,12 @@ def format_text_report(
     lines.append("")
     lines.append("=" * 78)
     lines.append(
-        "Sort: flip_score desc, fail_rate desc, check_id asc. "
-        "flip_score=1.0 is a perfect coin flip; 0.0 is unanimous."
+        "Sort: instability_score desc, fail_rate desc, check_id asc. "
+        "instab=1.0 is a perfect coin flip; 0.0 is unanimous."
+    )
+    lines.append(
+        "instab is tier-agnostic (check fired at all: failed OR warned); "
+        "flip is fails-only (gating-tier noise that can reject a draft)."
     )
     lines.append("=" * 78)
     return "\n".join(lines)
@@ -129,7 +143,7 @@ def build_json_payload(
     touching disk.
     """
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at_iso": time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
         ),

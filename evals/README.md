@@ -57,12 +57,25 @@ tests, or as a default.
 
 For each check ID, across K runs on one fixture:
 
-* **`fail_rate`** — `fails / runs`. 0.0 means the check never fired in
-  any run; 1.0 means it always fired.
+* **`fail_rate`** — `fails / runs`. 0.0 means the check never landed in
+  `failed_checks`; 1.0 means it always did.
 * **`flip_score`** — `2 * min(fail_rate, 1 - fail_rate)`. Zero when the
-  outcome is unanimous either way (stable). One at a 50/50 split (pure
-  coin flip on identical input — the worst case). Read as "noise level
-  on a 0..1 scale".
+  fail outcome is unanimous either way (stable). One at a 50/50 split.
+  This is the **gating-severity** signal — noise on the `failed_checks`
+  channel only, the channel that can terminally reject a draft. A check
+  demoted to `warning` tier no longer lands in `failed_checks`, so its
+  `flip_score` collapses to 0 even while it is flipping pass ↔ warning.
+* **`warning_rate`** — `warnings / runs`. Raw rate at which the check
+  landed in `warnings`.
+* **`instability_score`** — `2 * min(fire_rate, 1 - fire_rate)` where
+  `fire_rate = (fails + warnings) / runs` is the rate at which the check
+  **fired at all** (failed OR warned), regardless of tier. This is the
+  **headline, tier-agnostic** noise metric: a pass ↔ warning flip and a
+  pass ↔ fail flip score identically, so a demoted check that
+  `flip_score` goes blind to still shows up here. Known limitation: a
+  three-way pass/warning/fail split is only partially captured because
+  `fire_rate` folds warning and fail together, understating the true
+  three-way split (rare in practice — demoted checks flip two-way).
 * **`verdict_tier`** — `hard_fail | soft_fail | warning` per the
   Critic's `VERDICT_LEVEL_BY_CHECK`. A noisy `hard_fail` check is more
   dangerous than a noisy `warning`.
@@ -71,11 +84,14 @@ Plus, per fixture, a **`verdict_flip_score`** for the headline `pass /
 soft_fail / hard_fail` decision: `1 - max(count) / runs`. Zero means
 every run returned the same verdict.
 
-The text report sorts checks worst-first by `flip_score`, breaking ties
-on `fail_rate`. Stable rows (flip_score=0 and rate at 0 or 1) are
-collapsed into a footer count to keep the table focused on the noisy
-checks. The JSON dump in `evals/out/` always contains the full per-check
-tally for diffing two harness runs after a prompt change.
+The text report sorts checks worst-first by `instability_score`,
+breaking ties on `fail_rate` (so gating checks surface within an
+equally-noisy band). Stable rows (`instability_score` at/below the
+threshold and a unanimous `fire_rate` of 0 or 1) are collapsed into a
+footer count to keep the table focused on the noisy checks. Both `flip`
+(fails-only) and `instab` (tier-agnostic) columns are shown. The JSON
+dump in `evals/out/` always contains the full per-check tally for
+diffing two harness runs after a prompt change.
 
 ## Fixtures
 
@@ -114,7 +130,10 @@ run, and a sprawling fixture set dilutes the signal in the report.
 * **JSON output is stable for diffing.** Two harness runs at the same
   K should produce JSON files whose `fixtures[].checks.*` blocks can
   be diff'd directly (modulo `generated_at_iso`) to show what changed
-  after a prompt edit.
+  after a prompt edit. The payload carries `schema_version: 2` (bumped
+  from 1 when `warning_rate` and `instability_score` were added). The
+  bump is additive — existing keys are unchanged, so a v1 ↔ v2 diff
+  shows the two new per-check keys purely as additions.
 * **Out of scope (v1).** No gold labels, no precision/recall, no
   `--row-id` live-pull mode, no cost accounting. These are reasonable
   v2+ additions but each one is a meaningful build on top.

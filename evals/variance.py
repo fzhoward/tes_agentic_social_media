@@ -4,18 +4,32 @@ Given K Critic outputs on byte-identical input, compute per-check tallies
 and stability scores. Pure functions on already-collected data — no I/O,
 no LLM calls.
 
-Two metrics matter:
+Three per-check metrics matter:
 
 * ``fail_rate`` — the rate at which a check landed in ``failed_checks``
-  across K runs. 0.0 means the check never fired; 1.0 means it always
-  did.
+  across K runs. 0.0 means the check never landed there; 1.0 means it
+  always did.
 * ``flip_score`` — ``2 * min(fail_rate, 1 - fail_rate)``. Zero when the
-  outcome is unanimous either way (stable). One at a 50/50 split (pure
-  coin flip on identical input — the worst case). This is the headline
-  noise metric: a 5/10-fail/5/10-pass check is what we are hunting for.
-
-Per-check tallies also track ``warning_rate`` so a check that the merge
-layer routes to warnings (e.g., C7 today) can still be measured.
+  fail outcome is unanimous either way (stable). One at a 50/50 split.
+  This is the gating-severity signal: it measures noise on the
+  ``failed_checks`` channel only, which is what can terminally reject a
+  draft. A check demoted to ``warning`` tier no longer lands in
+  ``failed_checks``, so its ``flip_score`` collapses to 0 even when it is
+  flipping pass<->warning every other run.
+* ``warning_rate`` — ``warnings / runs``. Raw rate at which a check
+  landed in ``warnings``.
+* ``instability_score`` — ``2 * min(fire_rate, 1 - fire_rate)`` where
+  ``fire_rate = (fails + warnings) / runs`` is the rate at which the
+  check FIRED at all (failed OR warned) on byte-identical input,
+  regardless of tier. This is the headline, tier-agnostic noise metric:
+  a pass<->warning flip and a pass<->fail flip score identically, so it
+  stays nonzero for demoted (warning-tier) checks that ``flip_score``
+  goes blind to. Known limitation: a three-way pass/warning/fail split
+  on one check is only partially captured because ``fire_rate`` folds
+  warning and fail together (e.g. 4 pass / 3 warn / 3 fail -> fire_rate
+  0.6 -> instability 0.8, understating the true three-way split). This
+  is acceptable — demoted checks flip two-way pass<->warning in
+  practice; do not replace with entropy.
 """
 
 from __future__ import annotations
@@ -38,8 +52,20 @@ class CheckStats:
         passes: Times the check appeared in ``passed_checks``.
         warnings: Times the check appeared in ``warnings``.
         fail_rate: ``fails / runs`` (0.0 when ``runs == 0``).
-        flip_score: ``2 * min(fail_rate, 1 - fail_rate)``. Zero when
-            unanimous, one at 50/50.
+        flip_score: ``2 * min(fail_rate, 1 - fail_rate)``. Zero when the
+            fail outcome is unanimous, one at 50/50. Fails-only — the
+            gating-severity signal.
+        warning_rate: ``warnings / runs`` (0.0 when ``runs == 0``). Raw
+            rate at which the check landed in ``warnings``.
+        instability_score: ``2 * min(fire_rate, 1 - fire_rate)`` where
+            ``fire_rate = (fails + warnings) / runs``. Tier-agnostic
+            headline noise metric: nonzero whenever the check flips
+            between firing (fail OR warn) and not firing, so it stays
+            visible after a check is demoted to ``warning`` tier and
+            ``flip_score`` goes to 0. Known limitation: a three-way
+            pass/warning/fail split is only partially captured because
+            ``fire_rate`` folds warning and fail together, understating a
+            true three-way split.
         verdict_tier: ``"hard_fail" | "soft_fail" | "warning"`` per
             ``critic.VERDICT_LEVEL_BY_CHECK``. The tier matters because a
             noisy hard_fail check is more dangerous than a noisy warning.
@@ -52,6 +78,8 @@ class CheckStats:
     warnings: int = 0
     fail_rate: float = 0.0
     flip_score: float = 0.0
+    warning_rate: float = 0.0
+    instability_score: float = 0.0
     verdict_tier: str = "soft_fail"
 
     def to_dict(self) -> dict:
@@ -63,6 +91,8 @@ class CheckStats:
             "warnings": self.warnings,
             "fail_rate": round(self.fail_rate, 4),
             "flip_score": round(self.flip_score, 4),
+            "warning_rate": round(self.warning_rate, 4),
+            "instability_score": round(self.instability_score, 4),
             "verdict_tier": self.verdict_tier,
         }
 
@@ -111,6 +141,31 @@ def flip_score(fail_rate: float) -> float:
             f"fail_rate must be in [0, 1], got {fail_rate!r}"
         )
     return 2.0 * min(fail_rate, 1.0 - fail_rate)
+
+
+def instability_score(fire_rate: float) -> float:
+    """Return a 0..1 tier-agnostic noise score that peaks at a 50/50 split.
+
+    Defined as ``2 * min(fire_rate, 1 - fire_rate)`` where ``fire_rate`` is
+    ``(fails + warnings) / runs`` — i.e. the rate at which the check FIRED at
+    all (failed OR warned) on byte-identical input, regardless of tier.
+
+    Unlike ``flip_score`` (fails-only), this stays nonzero for a check that
+    flips pass<->warning, which is what happens after a check is demoted to
+    warning tier. Same shape/properties as ``flip_score``: 0 when unanimous
+    (always-fired or never-fired), 1 at a 50/50 split, symmetric, linear in
+    each half.
+
+    Known limitation: a three-way pass/warning/fail split on one check is only
+    partially captured (fire_rate folds warning and fail together), so a true
+    three-way split is understated. This is acceptable — demoted checks flip
+    two-way pass<->warning in practice. Do not replace with entropy.
+    """
+    if fire_rate < 0.0 or fire_rate > 1.0:
+        raise ValueError(
+            f"fire_rate must be in [0, 1], got {fire_rate!r}"
+        )
+    return 2.0 * min(fire_rate, 1.0 - fire_rate)
 
 
 def verdict_flip_score(verdicts: dict[str, int]) -> float:
@@ -175,6 +230,9 @@ def tally_check(check_id: str, outputs: list[dict]) -> CheckStats:
     if stats.runs > 0:
         stats.fail_rate = stats.fails / stats.runs
         stats.flip_score = flip_score(stats.fail_rate)
+        stats.warning_rate = stats.warnings / stats.runs
+        fire_rate = (stats.fails + stats.warnings) / stats.runs
+        stats.instability_score = instability_score(fire_rate)
     return stats
 
 
@@ -211,12 +269,14 @@ def aggregate_fixture(
 def rank_checks_worst_first(stats: FixtureStats) -> list[CheckStats]:
     """Return the fixture's checks sorted worst-first.
 
-    Primary key: ``flip_score`` descending — the noisiest checks first.
-    Tie-break: ``fail_rate`` descending — within equally-noisy checks,
-    surface the ones that fired more often (more chance to actually gate
-    a draft). Final tie-break: check_id ascending, for stable ordering.
+    Primary key: ``instability_score`` descending — the noisiest checks
+    first, tier-agnostic so demoted (warning-tier) flippers surface
+    alongside fail-tier flippers. Tie-break: ``fail_rate`` descending —
+    within an equally-noisy band, surface the gating checks (the ones
+    that can actually reject a draft) ahead of warning-only noise. Final
+    tie-break: check_id ascending, for stable ordering.
     """
     return sorted(
         stats.checks.values(),
-        key=lambda s: (-s.flip_score, -s.fail_rate, s.check_id),
+        key=lambda s: (-s.instability_score, -s.fail_rate, s.check_id),
     )
