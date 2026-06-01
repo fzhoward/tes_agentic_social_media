@@ -594,39 +594,242 @@ def test_one_cta_idiomatic_phrase_in_caption_not_flagged() -> None:
     assert critic.check_one_cta(cta_text=cta_text, caption=caption) == []
 
 
-# --- E1: CTA is last element (deterministic) — minimal smoke set.
-# The exhaustive edge-case matrix lives in the dedicated E1 test prompt.
-
-def test_cta_last_element_passes_when_cta_ends_caption() -> None:
-    """E1 — CTA is the final content of the caption → PASS."""
-    cta_text = "Call us to book the weekend slot."
-    caption = "We just got the new excavator in.\n\n" + cta_text
-    assert critic.check_cta_last_element(cta_text=cta_text, caption=caption) == []
+# --- E1: CTA is last element (deterministic) — exhaustive matrix.
+# The 4 original smoke tests (pass-at-end, fail-on-sign-off, empty-cta_text,
+# locate-miss) are FOLDED IN here — they are subsumed by cases 1, 3, 10/11
+# and 12 below and removed as standalone tests to avoid literal duplicates.
+# Each case calls check_cta_last_element directly: a FAIL is a one-element
+# list with check_id == "E1"; a PASS is [].
 
 
-def test_cta_last_element_fails_on_trailing_signoff() -> None:
-    """E1 — a sign-off after the CTA is a FAIL (no allowlist)."""
-    cta_text = "Call us to book the weekend slot."
-    caption = (
-        "We just got the new excavator in.\n\n"
-        + cta_text
-        + "\n\n— the T.E.S. crew"
-    )
+def _assert_e1_pass(cta_text: str, caption: str) -> None:
+    assert critic.check_cta_last_element(
+        cta_text=cta_text, caption=caption
+    ) == []
+
+
+def _assert_e1_fail(cta_text: str, caption: str, trailing_quote: str) -> dict:
+    """Assert a single E1 failure and return it.
+
+    Also assert the failure carries a non-empty location + fix_instruction and
+    that the actual trailing text is quoted in both location and description.
+    """
     failures = critic.check_cta_last_element(cta_text=cta_text, caption=caption)
-    assert any(f["check_id"] == "E1" for f in failures), failures
+    assert len(failures) == 1, failures
+    f = failures[0]
+    assert f["check_id"] == "E1"
+    assert f["location"].strip()
+    assert f["fix_instruction"].strip()
+    assert trailing_quote in f["location"], f["location"]
+    assert trailing_quote in f["description"], f["description"]
+    return f
 
 
-def test_cta_last_element_empty_cta_text_passes() -> None:
-    """E1 — empty cta_text (e.g. cta_type=none) → nothing to check, PASS."""
-    caption = "Just sharing a look at the yard today."
-    assert critic.check_cta_last_element(cta_text="", caption=caption) == []
+# Group 1 — Core pass/fail (the locked behavior).
+
+def test_e1_cta_exactly_at_end_passes() -> None:
+    """1. CTA is the final content of the caption, nothing after → PASS."""
+    cta = "Call us in the first comment."
+    _assert_e1_pass(cta, "We just got the new excavator in.\n\n" + cta)
 
 
-def test_cta_last_element_locate_miss_passes() -> None:
-    """E1 — cta_text not locatable in the caption → PASS, not a false gate."""
-    cta_text = "Reserve your weekend rental online."
-    caption = "We just got the new excavator in. Give us a shout anytime."
-    assert critic.check_cta_last_element(cta_text=cta_text, caption=caption) == []
+def test_e1_trailing_sentence_after_cta_fails() -> None:
+    """2. A full sentence follows the located CTA → FAIL."""
+    cta = "Call us in the first comment."
+    caption = "New loader in the yard.\n\n" + cta + " We are open all weekend."
+    _assert_e1_fail(cta, caption, "We are open all weekend.")
+
+
+def test_e1_trailing_signoff_own_line_fails() -> None:
+    """3. Sign-off on its OWN line after the CTA → FAIL.
+
+    The case the owner specifically cares about: CTA, blank line, sign-off.
+    """
+    cta = "Call us in the first comment."
+    caption = "New loader in the yard.\n\n" + cta + "\n\n— the T.E.S. crew"
+    _assert_e1_fail(cta, caption, "— the T.E.S. crew")
+
+
+def test_e1_trailing_signoff_same_line_fails() -> None:
+    """4. Sign-off on the SAME line/block as the CTA → FAIL.
+
+    This is the case Option A's anchor catches that Option B's last-block
+    model would miss — lock it.
+    """
+    cta = "Call us today."
+    _assert_e1_fail(cta, cta + " — the T.E.S. crew", "— the T.E.S. crew")
+
+
+def test_e1_trailing_whitespace_only_passes() -> None:
+    """5. Only trailing whitespace/newlines/tabs after the CTA → PASS.
+
+    Exercises the caption[last.end():].strip() emptiness test.
+    """
+    cta = "Send us a message to get started."
+    _assert_e1_pass(cta, "Booking up fast.\n\n" + cta + "  \t\n\n")
+
+
+# Group 2 — Option-A specifics (the parts most likely to regress).
+
+def test_e1_whitespace_flex_locates_and_passes() -> None:
+    """6a. cta_text uses single spaces; the caption renders the same CTA
+    across a newline and with a doubled space. The \\s+ flexibility must
+    still LOCATE it, so a clean end-of-caption CTA → PASS."""
+    cta = "Send us a message to get started."
+    rendered = "Send us a message\nto get  started."
+    _assert_e1_pass(cta, "Booking up fast.\n\n" + rendered)
+
+
+def test_e1_whitespace_flex_locates_and_fails_with_trailing() -> None:
+    """6b. Same whitespace-flex locate, but with trailing content after the
+    rendered CTA → FAIL. Proves the newline/space difference does not cause a
+    spurious miss in either direction."""
+    cta = "Send us a message to get started."
+    rendered = "Send us a message\nto get  started."
+    caption = "Booking up fast.\n\n" + rendered + "\n\n— the T.E.S. crew"
+    _assert_e1_fail(cta, caption, "— the T.E.S. crew")
+
+
+def test_e1_case_insensitive_locate_passes() -> None:
+    """7. cta_text differs in case from the caption rendering → still locates."""
+    caption = "New machine in.\n\nCall us in the first comment."
+    _assert_e1_pass("CALL US IN THE FIRST COMMENT.", caption)
+
+
+def test_e1_recurring_phrase_uses_final_occurrence_passes() -> None:
+    """8a. The CTA phrase recurs earlier as a legitimate callback and again as
+    the actual closing CTA. The FINAL occurrence is at the end → PASS.
+
+    Note the content sitting BETWEEN the early occurrence and the real CTA
+    ("We replied... / Here's the new loader") must NOT false-FAIL — E1 only
+    inspects what follows the final occurrence.
+    """
+    cta = "Send us a message."
+    caption = (
+        "Last spring? Send us a message. We replied within the hour.\n\n"
+        "Here's the new loader.\n\n"
+        "Send us a message."
+    )
+    _assert_e1_pass(cta, caption)
+
+
+def test_e1_recurring_phrase_final_occurrence_trailing_fails() -> None:
+    """8b. Mirror of 8a: the FINAL occurrence has trailing content → FAIL."""
+    cta = "Send us a message."
+    caption = (
+        "Last spring? Send us a message. We replied within the hour.\n\n"
+        "Send us a message.\n\nSee you out there."
+    )
+    _assert_e1_fail(cta, caption, "See you out there.")
+
+
+def test_e1_special_regex_chars_treated_as_literals_passes() -> None:
+    """9a. cta_text contains regex-significant characters (?, (), .). Tokens
+    are escaped, so they match as literals and still locate → PASS."""
+    cta = "Ready to dig? Reserve the 50G (this weekend)."
+    _assert_e1_pass(cta, "Zero tail swing.\n\n" + cta)
+
+
+def test_e1_special_regex_chars_treated_as_literals_fails_with_trailing() -> None:
+    """9b. Same regex-significant cta_text with trailing content → FAIL.
+    Guards against an escaping regression in either direction."""
+    cta = "Ready to dig? Reserve the 50G (this weekend)."
+    _assert_e1_fail(cta, cta + " Limited slots remain.", "Limited slots remain.")
+
+
+# Group 3 — PASS-by-design silent cases (intent documented in-test).
+
+def test_e1_empty_cta_text_cta_type_none_passes() -> None:
+    """10. Empty cta_text → PASS.
+
+    Real-world case: the objective intentionally omits a CTA (cta_type ==
+    "none"). The detector takes no cta_type param — empty cta_text alone
+    resolves to PASS, so cta_type never changes the outcome.
+    """
+    _assert_e1_pass("", "Just sharing a look at the yard today.")
+
+
+def test_e1_empty_cta_text_nonempty_caption_passes() -> None:
+    """11. Empty cta_text, non-empty caption → PASS.
+
+    E1 is silent here BY DESIGN: it is the "is the CTA last" check, NOT "is
+    there a CTA" (that is E3/A5). The silence is intentional, not a gap.
+    """
+    _assert_e1_pass("", "We just got the new excavator in. Stop by anytime.")
+
+
+def test_e1_locate_miss_passes() -> None:
+    """12. cta_text present but NOT locatable (rephrased/garbled) → PASS.
+
+    Locate-miss resolves to PASS deliberately: a false E1 failure would
+    re-introduce exactly the flip behavior the detector exists to remove,
+    masked as deterministic.
+    """
+    cta = "Reserve your weekend rental online."
+    _assert_e1_pass(cta, "We just got the new excavator in. Give us a shout.")
+
+
+def test_e1_both_empty_passes() -> None:
+    """13. Both cta_text and caption empty → PASS (degenerate, no crash)."""
+    _assert_e1_pass("", "")
+
+
+# Group 4 — Integration through run_deterministic_checks / merge.
+
+def test_e1_in_passed_ids_on_clean_row(base_row, base_config) -> None:
+    """14. E1 appears in passed IDs on a clean row whose caption ends with
+    its CTA (E1 is in PRE_CHECK_IDS)."""
+    failures, passed, _ = critic.run_deterministic_checks(
+        base_row, None, base_config
+    )
+    assert "E1" in passed
+    assert not any(f["check_id"] == "E1" for f in failures)
+
+
+def test_merge_blocks_llm_e1_hallucination() -> None:
+    """15. A deterministic E1 pass overrides an LLM-reported E1 failure.
+
+    Mirrors the B2/B4 hallucination-block pattern: an LLM E1 failure on a row
+    the detector passed must be discarded via det_passed_ids.
+    """
+    llm_result = {
+        "failed_checks": [{
+            "check_id": "E1",
+            "category": "cta",
+            "verdict_level": "soft_fail",
+            "location": "caption",
+            "description": "CTA is not last (hallucinated)",
+            "fix_instruction": "Move the CTA to the end.",
+        }],
+        "passed_checks": [],
+        "warnings": [],
+    }
+    merged = critic.merge_results(
+        deterministic_failures=[],
+        deterministic_passed=["E1"],
+        deterministic_warnings=[],
+        llm_result=llm_result,
+    )
+    assert not any(f["check_id"] == "E1" for f in merged["failed_checks"])
+    assert "E1" in merged["passed_checks"]
+
+
+def test_e1_deterministic_fail_gates_soft_fail(base_row, base_config) -> None:
+    """16. An E1 deterministic FAIL still gates — it drives a soft_fail.
+
+    A trailing sign-off after the row's CTA → E1 in run_deterministic_checks
+    failures at soft_fail tier, and that failure drives a soft_fail verdict.
+    """
+    row = dict(base_row)
+    row[critic.CQ_CAPTION] = (
+        base_row[critic.CQ_CAPTION] + "\n\n— the T.E.S. crew"
+    )
+    failures, _, _ = critic.run_deterministic_checks(row, None, base_config)
+    e1 = [f for f in failures if f["check_id"] == "E1"]
+    assert len(e1) == 1, failures
+    assert e1[0]["verdict_level"] == "soft_fail"
+    verdict, _ = critic.determine_verdict(e1, revision_round=1)
+    assert verdict == "soft_fail"
 
 
 def test_spec_rounding_catches_12000_vs_11800(base_catalog_item) -> None:
