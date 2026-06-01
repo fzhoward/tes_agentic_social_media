@@ -276,7 +276,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
 # the LLM's responsibility unless overridden.
 PRE_CHECK_IDS: tuple[str, ...] = (
     "A1", "A2", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B11",
-    "D1", "D5", "D6", "E2", "G3",
+    "D1", "D5", "D6", "E1", "E2", "G3",
 )
 
 ALL_CHECK_IDS: tuple[str, ...] = tuple(
@@ -901,6 +901,93 @@ def check_one_cta(cta_text: str, caption: str = "") -> list[dict]:
     return []
 
 
+def check_cta_last_element(cta_text: str, caption: str = "") -> list[dict]:
+    """E1 — CTA is the last element of the caption.
+
+    Deterministic. The CTA lives in the dedicated ``cta_text`` field — the
+    authoritative target (same convention as B2/B4 and E2). The merge logic
+    treats a passed E1 here as authoritative over any LLM-reported E1, so the
+    deterministic verdict wins on conflict. E1 was a top run-to-run flipper as
+    a pure LLM check; this replaces the judgment with a structural test.
+
+    Approach (Option A — anchor on ``cta_text``): locate the CTA string in the
+    caption with a whitespace-flexible, case-insensitive match (runs of
+    whitespace in ``cta_text`` match any whitespace, so a newline vs space
+    difference between the field and the rendered caption does not defeat the
+    locate). E1 passes iff nothing but whitespace follows the CTA's final
+    occurrence. Anchoring beats a last-paragraph/last-line model (Option B) for
+    the locked requirement that a trailing sign-off must FAIL: knowing exactly
+    where the CTA ends lets us see a "— the T.E.S. crew" appended on the same
+    block, which a coarse last-block proxy can miss. The Option-B last-block
+    fallback collapses to PASS on a true locate-miss (see below) — without the
+    ``cta_text`` anchor a last-block model cannot identify which block is the
+    CTA, so adding it would only add false-FAIL risk, not coverage.
+
+    Locked behavior — any non-whitespace content after the CTA is a FAIL.
+    There is no allowlist: sign-offs ("See you out there", "— the T.E.S. crew")
+    following the CTA fail E1. The CTA must be the last thing in the caption.
+
+    Case behavior:
+    - ``cta_text`` empty AND ``cta_type == "none"`` (objective intentionally
+      omits a CTA): nothing to check → PASS. We do not invent a CTA to test.
+    - ``cta_text`` empty but ``cta_type != "none"``: PASS (not checkable here).
+      Conservative choice — without a located CTA span there is no actionable
+      E1 failure to hand the Drafter, and a last-block model cannot locate the
+      CTA without the anchor. A missing/misplaced CTA is left to other checks
+      and human review. (Both empty-``cta_text`` cases resolve to PASS, so
+      ``cta_type`` does not change the outcome and is not a parameter here.)
+    - ``cta_text`` present but not locatable in the caption (rephrasing or a
+      punctuation difference defeats the match): PASS. A false E1 failure here
+      would re-introduce exactly the flip behavior we are removing, but masked
+      as deterministic. Safer to PASS and let the LLM/human catch a genuine
+      misplacement than to hard-gate on a locate-miss.
+    - ``cta_text`` present, located, with trailing non-whitespace content: FAIL
+      (sign-offs included), with ``location`` naming the trailing content and
+      ``fix_instruction`` telling the Drafter to move the CTA to the end.
+    """
+    target = (cta_text or "").strip()
+    if not target or not caption:
+        # Empty cta_text (cta_type none or otherwise) → nothing to anchor on,
+        # PASS. No caption → nothing to check.
+        return []
+
+    # Whitespace-flexible, case-insensitive locate against the original caption
+    # (preserves indices, so the tail is reported from the original text).
+    pattern = re.compile(
+        r"\s+".join(re.escape(tok) for tok in target.split()),
+        re.IGNORECASE,
+    )
+    matches = list(pattern.finditer(caption))
+    if not matches:
+        # Locate-miss — PASS rather than risk a false deterministic gate.
+        return []
+
+    # Use the final occurrence: if the CTA appears at the very end, E1 passes
+    # even if the same phrase also appears earlier in the caption.
+    last = matches[-1]
+    trailing = caption[last.end():]
+    if not trailing.strip():
+        return []
+
+    snippet = trailing.strip()
+    if len(snippet) > 80:
+        snippet = snippet[:77] + "..."
+    return [_make_failure(
+        check_id="E1",
+        location=f"caption — content after the CTA: {snippet!r}",
+        description=(
+            f"The CTA is not the last element of the caption. Trailing "
+            f"content follows it: {snippet!r}. The CTA must be the last "
+            f"thing in the caption (sign-offs included)."
+        ),
+        fix_instruction=(
+            "Move the CTA to the very end of the caption, or remove the "
+            "content that follows it. Nothing — not even a sign-off — should "
+            "come after the CTA."
+        ),
+    )]
+
+
 def check_spec_rounding(caption: str, catalog_item: dict | None) -> list[dict]:
     """G3 — flag numbers in the caption that don't match catalog spec values.
 
@@ -1024,6 +1111,10 @@ def run_deterministic_checks(
     failures.extend(check_caption_length(caption, platform))
     failures.extend(check_gbp_button(platform, cta_type, booking_url, website_url))
     failures.extend(check_one_cta(
+        cta_text=str(row.get(CQ_CTA_TEXT, "") or ""),
+        caption=caption,
+    ))
+    failures.extend(check_cta_last_element(
         cta_text=str(row.get(CQ_CTA_TEXT, "") or ""),
         caption=caption,
     ))

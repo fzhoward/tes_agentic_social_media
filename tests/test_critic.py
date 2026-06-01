@@ -594,6 +594,41 @@ def test_one_cta_idiomatic_phrase_in_caption_not_flagged() -> None:
     assert critic.check_one_cta(cta_text=cta_text, caption=caption) == []
 
 
+# --- E1: CTA is last element (deterministic) — minimal smoke set.
+# The exhaustive edge-case matrix lives in the dedicated E1 test prompt.
+
+def test_cta_last_element_passes_when_cta_ends_caption() -> None:
+    """E1 — CTA is the final content of the caption → PASS."""
+    cta_text = "Call us to book the weekend slot."
+    caption = "We just got the new excavator in.\n\n" + cta_text
+    assert critic.check_cta_last_element(cta_text=cta_text, caption=caption) == []
+
+
+def test_cta_last_element_fails_on_trailing_signoff() -> None:
+    """E1 — a sign-off after the CTA is a FAIL (no allowlist)."""
+    cta_text = "Call us to book the weekend slot."
+    caption = (
+        "We just got the new excavator in.\n\n"
+        + cta_text
+        + "\n\n— the T.E.S. crew"
+    )
+    failures = critic.check_cta_last_element(cta_text=cta_text, caption=caption)
+    assert any(f["check_id"] == "E1" for f in failures), failures
+
+
+def test_cta_last_element_empty_cta_text_passes() -> None:
+    """E1 — empty cta_text (e.g. cta_type=none) → nothing to check, PASS."""
+    caption = "Just sharing a look at the yard today."
+    assert critic.check_cta_last_element(cta_text="", caption=caption) == []
+
+
+def test_cta_last_element_locate_miss_passes() -> None:
+    """E1 — cta_text not locatable in the caption → PASS, not a false gate."""
+    cta_text = "Reserve your weekend rental online."
+    caption = "We just got the new excavator in. Give us a shout anytime."
+    assert critic.check_cta_last_element(cta_text=cta_text, caption=caption) == []
+
+
 def test_spec_rounding_catches_12000_vs_11800(base_catalog_item) -> None:
     """G3 — caption claims 12,000 lbs but catalog says 11,800 lbs."""
     caption = "The 50G weighs about 12,000 lbs on the trailer."
