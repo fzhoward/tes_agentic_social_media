@@ -537,9 +537,21 @@ def test_caption_length_within_limit_passes() -> None:
 
 
 def test_caption_target_range_low_on_gbp() -> None:
-    """B8 — caption below the GBP target (150-200) fails."""
+    """B8 — caption below the GBP target (600-800) fails."""
     failures = critic.check_caption_target_range("short", "gbp")
     assert any(f["check_id"] == "B8" for f in failures)
+
+
+def test_caption_target_range_high_on_gbp() -> None:
+    """B8 — caption above the GBP target (600-800) fails."""
+    failures = critic.check_caption_target_range("a" * 900, "gbp")
+    assert any(f["check_id"] == "B8" for f in failures)
+
+
+def test_caption_target_range_in_band_on_gbp() -> None:
+    """B8 — caption within the new GBP target (600-800) passes."""
+    failures = critic.check_caption_target_range("a" * 700, "gbp")
+    assert failures == []
 
 
 def test_gbp_button_call_no_url_required() -> None:
@@ -1177,17 +1189,6 @@ def test_w1_warning_when_no_media_url(base_row, base_config) -> None:
     )
     w1 = [w for w in warnings if w["check_id"] == "W1"]
     assert w1, warnings
-
-
-def test_w3_warning_when_gbp_near_truncation(base_row, base_config) -> None:
-    """W3 fires when a GBP caption is within the truncation warning band."""
-    base_row[critic.CQ_PLATFORM] = "gbp"
-    base_row[critic.CQ_CAPTION] = "a" * 175  # within 150-200 band
-    _, _, warnings = critic.run_deterministic_checks(
-        row=base_row, catalog_item=None, config=base_config,
-    )
-    w3 = [w for w in warnings if w["check_id"] == "W3"]
-    assert w3, warnings
 
 
 # --- Verdict logic tests ---
