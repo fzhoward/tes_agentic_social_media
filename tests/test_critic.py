@@ -832,6 +832,219 @@ def test_e1_deterministic_fail_gates_soft_fail(base_row, base_config) -> None:
     assert verdict == "soft_fail"
 
 
+# --- E3: CTA names a specific action (deterministic verb-presence gate).
+# check_cta_specific_action(cta_text, cta_type) is in PRE_CHECK_IDS and stays
+# soft_fail (gating). A FAIL is a one-element list with check_id == "E3"; a
+# PASS is []. Every cta_text below was verified against the committed
+# CTA_VERBS + CTA_CLAUSE_START_RE before asserting PASS/FAIL.
+
+
+def _assert_e3_pass(cta_text: str, cta_type: str) -> None:
+    assert critic.check_cta_specific_action(
+        cta_text=cta_text, cta_type=cta_type
+    ) == []
+
+
+def _assert_e3_fail(cta_text: str, cta_type: str) -> dict:
+    """Assert a single E3 failure and return it (shape + non-empty fields)."""
+    failures = critic.check_cta_specific_action(
+        cta_text=cta_text, cta_type=cta_type
+    )
+    assert len(failures) == 1, failures
+    f = failures[0]
+    assert f["check_id"] == "E3"
+    assert f["location"].strip()
+    assert f["description"].strip()
+    assert f["fix_instruction"].strip()
+    return f
+
+
+# Group 1 — no-verb-gate set → PASS (the false-positive guards).
+
+def test_e3_cta_type_none_empty_text_passes() -> None:
+    """1a. cta_type == 'none', empty cta_text → PASS.
+
+    The objective intentionally omits a CTA — nothing to gate.
+    """
+    _assert_e3_pass("", "none")
+
+
+def test_e3_cta_type_none_nonempty_text_passes() -> None:
+    """1b. cta_type == 'none' with a NON-empty cta_text → PASS.
+
+    Proves the gate keys off cta_type, not cta_text: even a verbless string
+    is not gated when the type is 'none'.
+    """
+    _assert_e3_pass("Contact us sometime.", "none")
+
+
+def test_e3_cta_type_empty_passes() -> None:
+    """1c. cta_type unset ('') → PASS (no-verb-gate)."""
+    _assert_e3_pass("", "")
+
+
+def test_e3_directions_no_verb_carveout_passes() -> None:
+    """1d. cta_type == 'directions' with a CTA that has NO CTA_VERBS verb at
+    all → PASS.
+
+    This is the true carve-out test: 'Find us on Google Maps.' contains no
+    recognized CTA verb (CTA_CLAUSE_START_RE.findall == []), so it PASSes ONLY
+    because 'directions' is in the no-verb-gate set — not because a verb was
+    found. If 'directions' were ever removed from the no-gate set, this case
+    would start FAILing.
+    """
+    _assert_e3_pass("Find us on Google Maps.", "directions")
+
+
+def test_e3_directions_with_incidental_verb_passes() -> None:
+    """1e. cta_type == 'directions' with 'Stop by … Directions on our Google
+    listing.' → PASS.
+
+    Note: 'Stop' happens to be a CTA_VERB, so this case does NOT isolate the
+    carve-out (it would PASS even without the no-gate set). The
+    'Find us on Google Maps.' case (1d) is the one that isolates it. Included
+    only to mirror cta.md's canonical directions phrasing.
+    """
+    _assert_e3_pass(
+        "Stop by during business hours. Directions on our Google listing.",
+        "directions",
+    )
+
+
+def test_e3_cta_type_normalization_passes() -> None:
+    """1f. Mixed case / surrounding whitespace on cta_type → PASS, proving the
+    .strip().lower() normalization feeds the no-verb-gate set."""
+    _assert_e3_pass("Find us on Google Maps.", "DIRECTIONS")
+    _assert_e3_pass("", " None ")
+
+
+# Group 2 — required-but-empty → FAIL.
+
+def test_e3_required_but_empty_call_fails() -> None:
+    """2a. cta_type == 'call' (requires a CTA) but cta_text empty → FAIL.
+
+    The committed description carries cta_type via {cta_type!r} and signals
+    emptiness with the word 'empty'.
+    """
+    f = _assert_e3_fail("", "call")
+    assert "call" in f["description"], f["description"]
+    assert "empty" in f["description"], f["description"]
+
+
+def test_e3_required_but_whitespace_only_fails() -> None:
+    """2b. Whitespace-only cta_text with a required type → FAIL.
+
+    Proves the .strip() emptiness test (a blank string is treated as empty).
+    """
+    _assert_e3_fail("   ", "call")
+
+
+def test_e3_required_but_empty_book_fails() -> None:
+    """2c. Required-but-empty is not call-specific — 'book' also FAILs."""
+    f = _assert_e3_fail("", "book")
+    assert "book" in f["description"], f["description"]
+
+
+# Group 3 — verbless non-empty → FAIL (the "Contact us" case the checklist names).
+
+def test_e3_verbless_contact_us_fails() -> None:
+    """3a. cta_type == 'call', cta_text == 'Contact us for details.' → FAIL.
+
+    The committed verbless description quotes the offending cta_text via
+    {target!r} and carries the locked wording 'too vague'.
+    """
+    cta = "Contact us for details."
+    f = _assert_e3_fail(cta, "call")
+    assert cta in f["description"], f["description"]
+    assert "too vague" in f["description"], f["description"]
+
+
+def test_e3_verbless_reach_out_fails() -> None:
+    """3b. cta_type == 'visit', cta_text == 'Reach out anytime.' → FAIL.
+
+    'reach' is not in CTA_VERBS (findall == []), so a required type FAILs.
+    """
+    _assert_e3_fail("Reach out anytime.", "visit")
+
+
+def test_e3_midsentence_verb_not_clause_start_fails() -> None:
+    """3c. A CTA verb that appears mid-sentence (NOT at a clause start) must
+    NOT satisfy the gate → FAIL.
+
+    'We have the right tool to call on for your project.' contains 'call' but
+    not at a clause start (CTA_CLAUSE_START_RE.findall == []). This locks that
+    E3 inherits E2's clause-start discipline — a bare substring search would
+    have wrongly PASSed this.
+    """
+    _assert_e3_fail(
+        "We have the right tool to call on for your project.", "call"
+    )
+
+
+# Group 4 — verb present → PASS.
+
+def test_e3_verb_present_call_passes() -> None:
+    """4a. cta_type == 'call', cta_text leads with 'Call' → PASS."""
+    _assert_e3_pass("Call us at 904-555-0100.", "call")
+
+
+def test_e3_presence_not_correspondence_passes() -> None:
+    """4b. PRESENCE-NOT-CORRESPONDENCE LOCK: cta_type == 'dm' but the verb is
+    'Send'/'message' → PASS.
+
+    E3 checks only that SOME recognized CTA verb is present; it does NOT
+    require the verb to match the assigned cta_type. This is the scope
+    decision most likely to be wrongly "tightened" into a verb-must-match-type
+    bug later — this test exists to catch that.
+    """
+    _assert_e3_pass("Send us a message with your project details.", "dm")
+
+
+def test_e3_verb_present_tap_passes() -> None:
+    """4c. cta_type == 'click', 'Tap' present at a clause start → PASS."""
+    _assert_e3_pass(
+        "Full breakdown in the first comment. Tap the link.", "click"
+    )
+
+
+def test_e3_verb_present_book_passes() -> None:
+    """4d. cta_type == 'book', cta_text leads with 'Book' → PASS."""
+    _assert_e3_pass("Book your slot at the link.", "book")
+
+
+# Group 5 — integration through run_deterministic_checks / PRE_CHECK_IDS.
+
+def test_e3_in_pre_check_ids() -> None:
+    """5a. E3 is a deterministic pre-check."""
+    assert "E3" in critic.PRE_CHECK_IDS
+
+
+def test_e3_verbless_row_fails_and_not_in_passed(base_row, base_config) -> None:
+    """5b. A row with a verbless cta_text + a required cta_type drives an E3
+    failure through run_deterministic_checks, and E3 is NOT in passed IDs."""
+    row = dict(base_row)
+    row[critic.CQ_CTA_TYPE] = "call"
+    row[critic.CQ_CTA_TEXT] = "Contact us for details."
+    failures, passed, _ = critic.run_deterministic_checks(
+        row, None, base_config
+    )
+    assert any(f["check_id"] == "E3" for f in failures), failures
+    assert "E3" not in passed
+
+
+def test_e3_verb_present_row_in_passed(base_row, base_config) -> None:
+    """5c. Mirror of 5b: a verb-present cta_text → E3 in passed IDs, no E3
+    failure."""
+    row = dict(base_row)
+    row[critic.CQ_CTA_TYPE] = "call"
+    row[critic.CQ_CTA_TEXT] = "Call us at 904-555-0100."
+    failures, passed, _ = critic.run_deterministic_checks(
+        row, None, base_config
+    )
+    assert not any(f["check_id"] == "E3" for f in failures), failures
+    assert "E3" in passed
+
+
 def test_spec_rounding_catches_12000_vs_11800(base_catalog_item) -> None:
     """G3 — caption claims 12,000 lbs but catalog says 11,800 lbs."""
     caption = "The 50G weighs about 12,000 lbs on the trailer."
