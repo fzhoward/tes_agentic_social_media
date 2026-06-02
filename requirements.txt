@@ -25,3 +25,9 @@ slack-sdk>=3.21.0
 
 # --- Utilities ---
 Pillow>=10.0.0
+
+# --- Timezone data (zoneinfo backing; required on Windows, no system tzdb) ---
+tzdata>=2025.1
+
+# --- Metrics (Google Analytics Data API — pre-provisioned for the Metrics agent, not yet imported) ---
+google-analytics-data>=0.18.0
