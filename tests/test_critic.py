@@ -375,7 +375,7 @@ def test_check_fragment_lines_empty_no_op() -> None:
 
 def test_check_fragment_lines_fix_instruction_states_count() -> None:
     """B7 — fix_instruction must state the current count and how many more
-    are needed, plus the literal mechanical rule (own line, ≤5 words)."""
+    are needed, plus the literal mechanical rule (own line, ≤6 words)."""
     caption = (
         "Access first.\n\n"
         "Renting a compact excavator on a tight residential lot "
@@ -389,7 +389,7 @@ def test_check_fragment_lines_fix_instruction_states_count() -> None:
     assert "Add 1 more" in fix
     # mechanical rule
     assert "own line" in fix
-    assert "5 words or fewer" in fix
+    assert "6 words or fewer" in fix
 
 
 def test_check_fragment_lines_fix_instruction_zero() -> None:
@@ -406,6 +406,27 @@ def test_check_fragment_lines_fix_instruction_zero() -> None:
     fix = failures[0]["fix_instruction"]
     assert "you currently have 0" in fix
     assert "Add 2 more" in fix
+
+
+def test_check_fragment_lines_six_word_boundary_passes() -> None:
+    """B7 — fragment lines of exactly 6 words pass under the new <=6 rule.
+
+    Each boundary line below is exactly 6 words by ``_count_words`` (whitespace
+    split). Under the OLD <=5 rule neither would count as a fragment, leaving
+    only the 15-word line, so B7 would FAIL. Under the new <=6 rule both count,
+    giving 2 fragments and a pass. This locks the ->6 threshold: revert the
+    comparison to <=5 and this test fails.
+    """
+    caption = (
+        # exactly 6 words: Match the machine to the site
+        "Match the machine to the site.\n\n"
+        # 15-word line — never a fragment under either rule
+        "Renting a compact excavator on a tight residential lot "
+        "saves you both time and headache.\n\n"
+        # exactly 6 words: Check the access before you dig
+        "Check the access before you dig."
+    )
+    assert critic.check_fragment_lines(caption) == []
 
 
 def test_check_hook_duplication_unique_opening_passes() -> None:
