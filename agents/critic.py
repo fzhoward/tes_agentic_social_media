@@ -276,7 +276,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
 # the LLM's responsibility unless overridden.
 PRE_CHECK_IDS: tuple[str, ...] = (
     "A1", "A2", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B11",
-    "D1", "D5", "D6", "E1", "E2", "G3",
+    "D1", "D5", "D6", "E1", "E2", "E3", "G3",
 )
 
 ALL_CHECK_IDS: tuple[str, ...] = tuple(
@@ -988,6 +988,105 @@ def check_cta_last_element(cta_text: str, caption: str = "") -> list[dict]:
     )]
 
 
+def check_cta_specific_action(cta_text: str, cta_type: str) -> list[dict]:
+    """E3 — the CTA names a specific action (a recognized CTA verb is present).
+
+    Deterministic, modeled on E1 (``check_cta_last_element``). Where E1 asks
+    "is the CTA last", E3 asks "is there a specific-action CTA when one is
+    required". E3 was previously a pure LLM ``soft_fail`` and the top gating
+    coin-flipper (it FAILED a ``clean_high_quality`` fixture with flip_score
+    1.0 — the S27 "good post terminally rejected by LLM coin-flip" failure
+    mode, alive on a gating check). The enforceable core is a closed-set
+    lookup, not a judgment call, so making it deterministic stops the flip.
+
+    Scope (locked — do NOT widen): E3-deterministic checks ONE thing — is a
+    recognized CTA verb (``CTA_VERBS``, via ``CTA_CLAUSE_START_RE``) present in
+    ``cta_text`` when the assigned ``cta_type`` requires a CTA. It does NOT
+    check destination presence (phone/URL), does NOT check that the verb
+    matches the assigned ``cta_type``, and does NOT judge whether the phrasing
+    is "specific enough" or connected to the post. Those are OUT of scope (the
+    destination sub-check is a deferred follow-up; the phrasing judgment is
+    dropped). Resolution 1: a pure deterministic gate with no warning
+    remainder, exactly like E1/E2. E3 stays ``soft_fail`` (gating) — the
+    change is that the gate is now deterministic, not that it is demoted.
+
+    Uses ``CTA_CLAUSE_START_RE`` (the clause-start matcher) exactly as E2 does,
+    NOT a bare substring search, so a prepositional "call for the right tool"
+    mid-sentence does not falsely satisfy the gate.
+
+    Cases, in order:
+    - No-verb-gate set → PASS (return ``[]``) when ``cta_type`` is one of
+      ``""``/``none``/``directions``:
+        * ``none``/empty: the objective intentionally omits a CTA
+          (brand-awareness/advisory) — nothing to gate. Same precedent as
+          ``check_gbp_button`` skipping on ``none``.
+        * ``directions``: cta.md's ``directions`` CTAs ("Stop by… Directions
+          on our Google listing") do not reliably lead with a verb in
+          ``CTA_VERBS``, and the missing verbs (``get``, ``directions``) are
+          too common to add to ``CTA_VERBS`` without breaking E2's multi-verb
+          detection that shares the tuple. So ``directions`` is treated as
+          no-verb-gate here rather than polluting ``CTA_VERBS``. Do NOT "fix"
+          this later by adding common words to ``CTA_VERBS``.
+    - Required-but-empty → FAIL: the assigned ``cta_type`` requires a CTA but
+      ``cta_text`` is empty (e.g. a lead-gen post with no CTA). This is a
+      deliberate divergence from E1, which PASSes on empty ``cta_text`` —
+      E1's question (is the CTA last) is vacuous with no CTA, but E3's
+      question (is there a specific-action CTA when one is required) makes
+      required-but-empty a genuine failure.
+    - Verb present (≥1 ``CTA_CLAUSE_START_RE`` match) → PASS. Presence of any
+      recognized CTA verb satisfies the deterministic core. We do NOT check
+      the verb matches ``cta_type`` (presence only, by scope decision).
+    - Verbless (zero matches) → FAIL: the "Contact us" case the checklist
+      names — ``cta_text`` is non-empty but names no recognized CTA action
+      verb.
+    """
+    ct = (cta_type or "").strip().lower()
+
+    # No-verb-gate set: nothing to gate (none/empty), or a CTA type whose
+    # phrasing does not reliably lead with a CTA_VERBS verb (directions).
+    if ct in ("", "none", "directions"):
+        return []
+
+    target = (cta_text or "").strip()
+    if not target:
+        # Required-but-empty: the assigned cta_type requires a CTA but none
+        # was written. Genuine E3 defect (diverges from E1, which PASSes here).
+        return [_make_failure(
+            check_id="E3",
+            location="cta_text field",
+            description=(
+                f"cta_type={cta_type!r} requires a CTA that names a specific "
+                f"action, but cta_text is empty."
+            ),
+            fix_instruction=(
+                f"Add a CTA to cta_text that names the specific action for a "
+                f"{cta_type!r} CTA, phrased with an action verb (e.g. "
+                f"\"Call us at…\", \"Send us a message…\", \"See the full "
+                f"specs at…\")."
+            ),
+        )]
+
+    # Presence test — a recognized CTA verb at the start of a clause.
+    matches = CTA_CLAUSE_START_RE.findall(target)
+    if matches:
+        return []
+
+    return [_make_failure(
+        check_id="E3",
+        location="cta_text field",
+        description=(
+            f"cta_text {target!r} names no recognized CTA action verb. "
+            f"\"Contact us\" is too vague — the CTA must name the specific "
+            f"action."
+        ),
+        fix_instruction=(
+            f"Rephrase the {cta_type!r} CTA with a specific action verb "
+            f"(e.g. \"Call us at…\", \"Send us a message…\", \"See the full "
+            f"specs at…\") per the cta.md phrasing patterns."
+        ),
+    )]
+
+
 def check_spec_rounding(caption: str, catalog_item: dict | None) -> list[dict]:
     """G3 — flag numbers in the caption that don't match catalog spec values.
 
@@ -1117,6 +1216,10 @@ def run_deterministic_checks(
     failures.extend(check_cta_last_element(
         cta_text=str(row.get(CQ_CTA_TEXT, "") or ""),
         caption=caption,
+    ))
+    failures.extend(check_cta_specific_action(
+        cta_text=str(row.get(CQ_CTA_TEXT, "") or ""),
+        cta_type=cta_type,
     ))
     failures.extend(check_spec_rounding(caption, catalog_item))
     failures.extend(check_catalog_status(catalog_item))
