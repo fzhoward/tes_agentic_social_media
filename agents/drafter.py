@@ -82,7 +82,7 @@ PLATFORM_DISPLAY_NAMES: dict[str, str] = {
 CAPTION_TARGET_RANGE: dict[str, tuple[int, int]] = {
     "facebook": (500, 1500),
     "instagram": (800, 1500),
-    "gbp": (150, 200),
+    "gbp": (600, 800),
 }
 
 # Strict output rules per CTA type. Enforced via prompt-level instruction in

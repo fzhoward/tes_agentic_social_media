@@ -49,13 +49,8 @@ PLATFORM_CHAR_LIMITS: dict[str, int] = {
 CAPTION_TARGET_RANGE: dict[str, tuple[int, int]] = {
     "facebook": (500, 1500),
     "instagram": (800, 1500),
-    "gbp": (150, 200),
+    "gbp": (600, 800),
 }
-
-# GBP truncation threshold for the W3 warning.
-GBP_TRUNCATION_LOWER: int = 150
-GBP_TRUNCATION_UPPER: int = 200
-GBP_WARNING_BAND: int = 20
 
 CREATIVE_HOOK_MAX_WORDS: int = 7
 
@@ -249,7 +244,7 @@ CATEGORY_BY_CHECK: dict[str, str] = {
     # G — catalog
     "G1": "catalog", "G2": "catalog", "G3": "catalog",
     # W — warnings
-    "W1": "warning", "W2": "warning", "W3": "warning",
+    "W1": "warning", "W2": "warning",
 }
 
 # Verdict level per check ID (hard_fail vs soft_fail vs warning).
@@ -269,7 +264,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
     "E4": "soft_fail", "E5": "soft_fail",
     "F1": "warning", "F2": "warning", "F3": "warning",
     "G1": "soft_fail", "G2": "soft_fail", "G3": "soft_fail",
-    "W1": "warning", "W2": "warning", "W3": "warning",
+    "W1": "warning", "W2": "warning",
 }
 
 # Checks the deterministic pre-check block evaluates. Other check IDs are
@@ -1240,21 +1235,6 @@ def run_deterministic_checks(
             "No confirmed media asset attached. Required for Instagram "
             "scheduling.",
         ))
-
-    # W3 — GBP length near truncation threshold.
-    if platform.strip().lower() == "gbp":
-        n = len(caption)
-        if (
-            GBP_TRUNCATION_LOWER - GBP_WARNING_BAND <= n
-            <= GBP_TRUNCATION_UPPER + GBP_WARNING_BAND
-        ):
-            warnings.append(_make_warning(
-                "W3",
-                f"GBP caption is {n} chars — within the warning band of "
-                f"the ~{GBP_TRUNCATION_LOWER}-{GBP_TRUNCATION_UPPER} char "
-                f"truncation threshold. The hook may be cut off in the "
-                f"panel view.",
-            ))
 
     return failures, passed_ids, warnings
 
