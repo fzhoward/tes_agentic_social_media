@@ -114,8 +114,8 @@ Return the structured JSON defined in the Critic Checklist:
 
 ```json
 {
-  "queue_row_id": "{{ROW_ID}}",
-  "platform": "{{PLATFORM}}",
+  "queue_row_id": "STR-20260101-IG-01",
+  "platform": "instagram",
   "revision_round": 1,
   "verdict": "pass | soft_fail | hard_fail",
   "failed_checks": [...],

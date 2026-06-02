@@ -86,8 +86,7 @@
 # These pass through skill_loader unchanged and are substituted by the calling agent
 # from Content Queue row data or as literal documentation examples.
 # {{TOPIC}}        — gbp_post: per-post topic supplied by Drafter
-# {{PLATFORM}}     — critic, image_prompt_social: target platform from Content Queue row
-# {{ROW_ID}}       — critic: Content Queue row identifier being QA'd
+# {{PLATFORM}}     — image_prompt_social: target platform, injected by Drafter from Content Queue row
 # {{PLACEHOLDER}}  — image_prompt_social: literal documentation example, NOT a real token
 
 
