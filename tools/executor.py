@@ -9,14 +9,25 @@ agent logic (per CLAUDE.md).
 
 Endpoints:
     GET  /healthz                       liveness probe (no auth)
+    POST /run/indexer                   Asset Indexer — bearer auth
+    POST /run/strategist                Strategist — bearer auth
+    POST /run/draft-cycle               Front-half revision loop — bearer auth,
+                                        async (202 + background thread)
     POST /run/approval-card             Make Scenario 5 — bearer auth
     POST /run/approval-card-reschedule  Make Scenario 7 — bearer auth
     POST /slack/interactivity           Slack Scenario 6 — Slack signature auth
 
 Auth:
-    - Make endpoints require  Authorization: Bearer <EXECUTOR_TOKEN>
+    - Make endpoints (/run/*) require  Authorization: Bearer <EXECUTOR_TOKEN>.
+      This includes /run/indexer, /run/strategist, and /run/draft-cycle.
     - Slack endpoint verifies X-Slack-Signature over the RAW request body
       using SLACK_SIGNING_SECRET (the standard Slack v0 scheme).
+
+    /run/draft-cycle does N rows x multiple LLM calls and far exceeds the
+    synchronous subprocess cap, so it runs in a background thread (like
+    /slack/interactivity) and returns 202 immediately; the cycle writes its
+    results to the Content Queue and logs its final JSON to stdout for
+    journalctl.
 
 Environment (loaded from .env via python-dotenv):
     EXECUTOR_TOKEN         shared secret for the Make-triggered endpoints
@@ -56,6 +67,9 @@ CONFIG_PATH = os.environ.get(
 _SLACK_TIMESTAMP_TOLERANCE = 60 * 5  # 5 minutes
 # Hard cap on how long a shelled-out CLI may run before we give up.
 _SUBPROCESS_TIMEOUT = 120
+# Generous cap for the draft-cycle, which does N rows x multiple LLM calls. It
+# runs in a background thread, so a long cap does not block the request.
+_DRAFT_CYCLE_TIMEOUT = 60 * 30
 
 app = Flask(__name__)
 
@@ -73,11 +87,15 @@ def _python() -> str:
     return str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
 
 
-def _run_cli(args: list[str]) -> tuple[int, dict | str]:
+def _run_cli(
+    args: list[str], timeout: int = _SUBPROCESS_TIMEOUT
+) -> tuple[int, dict | str]:
     """Run a pipeline CLI module and return (exit_code, parsed_json_or_text).
 
     Runs from REPO_ROOT with BUSINESS_CONFIG_PATH set so the tools resolve
-    their config exactly as they do when invoked by hand.
+    their config exactly as they do when invoked by hand. `timeout` defaults to
+    the synchronous cap; long-running async callers (the draft-cycle) pass a
+    larger value.
     """
     env = dict(os.environ)
     env["BUSINESS_CONFIG_PATH"] = CONFIG_PATH
@@ -88,7 +106,7 @@ def _run_cli(args: list[str]) -> tuple[int, dict | str]:
             env=env,
             capture_output=True,
             text=True,
-            timeout=_SUBPROCESS_TIMEOUT,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return 124, {"success": False, "error": "CLI timed out"}
@@ -157,6 +175,52 @@ def _verify_slack_signature(raw_body: bytes) -> bool:
 @app.get("/healthz")
 def healthz() -> Response:
     return jsonify({"ok": True, "service": "executor"})
+
+
+@app.post("/run/indexer")
+def run_indexer() -> Response:
+    if not _check_bearer():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    code, result = _run_cli(["agents.asset_indexer"])
+    return jsonify({"exit_code": code, "result": result}), (
+        200 if code == 0 else 500
+    )
+
+
+@app.post("/run/strategist")
+def run_strategist() -> Response:
+    if not _check_bearer():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    code, result = _run_cli(["agents.strategist"])
+    return jsonify({"exit_code": code, "result": result}), (
+        200 if code == 0 else 500
+    )
+
+
+def _dispatch_draft_cycle() -> None:
+    """Background worker: run the front-half revision loop to completion."""
+    code, result = _run_cli(
+        ["agents.draft_cycle"], timeout=_DRAFT_CYCLE_TIMEOUT
+    )
+    # Log to stdout so journalctl captures the outcome (same pattern as the
+    # Slack router dispatch).
+    print(
+        json.dumps(
+            {"draft_cycle_exit_code": code, "draft_cycle_result": result}
+        ),
+        flush=True,
+    )
+
+
+@app.post("/run/draft-cycle")
+def run_draft_cycle() -> Response:
+    if not _check_bearer():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    # The cycle does N rows x multiple LLM calls and far exceeds the sync cap,
+    # so run it in the background and acknowledge immediately so Make's poke
+    # does not hang. Results land in the Content Queue + stdout (journalctl).
+    threading.Thread(target=_dispatch_draft_cycle, daemon=True).start()
+    return jsonify({"accepted": True}), 202
 
 
 @app.post("/run/approval-card")
