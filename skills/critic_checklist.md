@@ -62,7 +62,7 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 | B4 | **No hashtags** (unless the brand voice explicitly allows them for the target platform). | Brand voice: Hashtag Policy |
 | B5 | **Vertical stack formatting.** Every content line must be followed by a blank line. No dense paragraphs. *Deterministic pre-check.* | Brand voice: Caption Formatting |
 | B6 | **Sentence length.** No sentence exceeds 18 words. Median sentence length should be 8-12 words. | Brand voice: Caption Formatting |
-| B7 | **Fragment lines.** At least 2 fragment lines (5 words or fewer) per post for pacing. *Deterministic pre-check.* | Brand voice: Caption Formatting |
+| B7 | **Fragment lines.** At least 2 fragment lines (6 words or fewer) per post for pacing. *Deterministic pre-check.* | Brand voice: Caption Formatting |
 | B8 | **Word count in range.** Caption body (excluding hook) must fall within the target range for the post type and platform. | Brand voice: Word Count Targets |
 | B9 | **No repeated hook.** The opening line (hook) must appear exactly once and must not be repeated later in the caption. *Deterministic pre-check.* | Brand voice: Hook Handling |
 | B10 | **Reading level.** Content should target 6th-7th grade Flesch-Kincaid reading level. | Brand voice: Caption Formatting |

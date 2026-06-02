@@ -529,14 +529,14 @@ def check_vertical_stack(caption: str) -> list[dict]:
 
 
 def check_fragment_lines(caption: str) -> list[dict]:
-    """B7 — at least 2 fragment lines (<=5 words) for pacing.
+    """B7 — at least 2 fragment lines (<=6 words) for pacing.
 
     Deterministic so the LLM cannot misjudge fragment density.
     """
     lines = _content_lines(caption)
     if not lines:
         return []
-    fragment_count = sum(1 for ln in lines if _count_words(ln) <= 5)
+    fragment_count = sum(1 for ln in lines if _count_words(ln) <= 6)
     if fragment_count >= 2:
         return []
     return [{
@@ -545,15 +545,15 @@ def check_fragment_lines(caption: str) -> list[dict]:
         "verdict_level": VERDICT_LEVEL_BY_CHECK.get("B7", "soft_fail"),
         "location": "caption body",
         "description": (
-            f"Only {fragment_count} fragment line(s) (<=5 words); "
+            f"Only {fragment_count} fragment line(s) (<=6 words); "
             f"at least 2 required for pacing."
         ),
         "fix_instruction": (
             f"At least 2 fragment lines are required; you currently have "
             f"{fragment_count}. Add {2 - fragment_count} more. A fragment "
             f"line must sit on its own line (separated by a blank line, "
-            f"per vertical-stack formatting) and be 5 words or fewer — "
-            f"count words literally, a 6-word line does not qualify. "
+            f"per vertical-stack formatting) and be 6 words or fewer — "
+            f"count words literally, a 7-word line does not qualify. "
             f"Example fragments: 'Tight access.' or 'Wet clay slows "
             f"everything.'"
         ),

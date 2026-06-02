@@ -1165,6 +1165,13 @@ def build_drafter_messages(
         "than 18 words to make its point, split it into two shorter sentences. "
         "Short, punchy sentences match the brand voice. Target 8-12 words per "
         "sentence.\n\n"
+        "Fragment-line rule: include at least 2 fragment lines in caption_body "
+        "— short lines that sit on their own line, separated by a blank line "
+        "per the vertical-stack formatting. The Critic allows a fragment line "
+        "to be up to 6 words, but aim for 4 to 5 words so you never land on "
+        "the edge. A fragment line is a punchy, declarative beat used for "
+        "pacing (for example \"Tight access.\" or \"Access first.\"), not a "
+        "full sentence.\n\n"
         "Return your output as valid JSON only. No markdown fences, no "
         "commentary before or after the JSON."
     )
