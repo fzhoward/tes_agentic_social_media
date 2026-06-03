@@ -31,3 +31,6 @@ tzdata>=2025.1
 
 # --- Metrics (Google Analytics Data API — pre-provisioned for the Metrics agent, not yet imported) ---
 google-analytics-data>=0.18.0
+
+# --- Testing ---
+pytest>=9.0.3

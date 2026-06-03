@@ -19,6 +19,17 @@ import traceback
 from contextlib import redirect_stdout
 from pathlib import Path
 
+# Snapshot whether we are running under pytest BEFORE our own guarded import of
+# pytest below (which would otherwise put "pytest" in sys.modules and fool the
+# check). Under a real pytest run, pytest has already imported this module, so
+# "pytest" is in sys.modules here. Under the native runner it is not.
+_UNDER_PYTEST = "pytest" in sys.modules
+
+try:
+    import pytest  # type: ignore
+except ImportError:  # native runner must work without pytest installed
+    pytest = None  # type: ignore
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
@@ -46,6 +57,10 @@ def _check(name: str, condition: bool, detail: str = "") -> None:
         _PASSED += 1
         print(f"  PASS  {name}")
     else:
+        # Under pytest, raise so the failure is reported by the test runner.
+        # The native runner accumulates and never raises.
+        if _UNDER_PYTEST:
+            raise AssertionError(f"{name} — {detail}")
         _FAILURES.append((name, detail))
         print(f"  FAIL  {name} — {detail}")
 
@@ -2624,6 +2639,16 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
         f"error={result.get('error')}, "
         f"validation_issues={result.get('validation_issues')}",
     )
+
+
+if pytest is not None:
+    # Live Anthropic-API integration test; costs money. Skip under pytest so it
+    # is never collected/run there. The native runner calls it directly with a
+    # loaded config (the skip wrapper leaves the function directly callable).
+    test_drafter_dry_run = pytest.mark.skip(
+        reason="live Anthropic API integration test; costs money. "
+        "Run via the native runner: python3 tests/test_drafter.py --live"
+    )(test_drafter_dry_run)
 
 
 def run_tests(run_live: bool) -> int:
