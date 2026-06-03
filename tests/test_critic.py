@@ -545,6 +545,59 @@ def test_creative_hook_text_overlap_fails() -> None:
     assert any(f["check_id"] == "B11" for f in failures)
 
 
+def test_b11_overlap_allowed_when_from_review_excerpt() -> None:
+    """B11 — an overlap is permitted when the overlapping (contained) hook is a
+    substring of the SELECTED review_excerpt. Reproduces the live Larry case:
+    the Drafter faithfully quoted "just go ahead and call" in both hooks."""
+    excerpt = (
+        "When my skid steer died mid-job, I figured just go ahead and call "
+        "T.E.S. Rentals — best decision all week."
+    )
+    failures = critic.check_creative_hook_text(
+        creative_hook="Just go ahead and call",
+        caption_hook="Just go ahead and call us today for a quote",
+        review_excerpt=excerpt,
+    )
+    assert not any(f["check_id"] == "B11" for f in failures), failures
+
+
+def test_b11_overlap_still_fails_when_not_from_excerpt() -> None:
+    """B11 — the same overlapping hooks still fail when the phrase is NOT in the
+    selected excerpt (empty or unrelated). Non-quoted overlap stays caught."""
+    # Empty excerpt → identical to pre-exception behavior.
+    failures_empty = critic.check_creative_hook_text(
+        creative_hook="Just go ahead and call",
+        caption_hook="Just go ahead and call us today for a quote",
+        review_excerpt="",
+    )
+    assert any(f["check_id"] == "B11" for f in failures_empty)
+
+    # Unrelated excerpt that does not contain the phrase → still fails.
+    failures_other = critic.check_creative_hook_text(
+        creative_hook="Just go ahead and call",
+        caption_hook="Just go ahead and call us today for a quote",
+        review_excerpt="Great machines, fair prices, quick turnaround every time.",
+    )
+    assert any(f["check_id"] == "B11" for f in failures_other)
+
+
+def test_b11_word_count_still_enforced_for_review_hook() -> None:
+    """B11 — the excerpt exception applies ONLY to the overlap sub-check. An
+    8-word creative_hook that is itself excerpt-sourced still fails the ≤7-word
+    sub-check."""
+    excerpt = (
+        "Honestly, just go ahead and call them right away — they had me "
+        "running the same day."
+    )
+    failures = critic.check_creative_hook_text(
+        creative_hook="Just go ahead and call them right away",  # 8 words
+        caption_hook="Just go ahead and call them right away today",
+        review_excerpt=excerpt,
+    )
+    assert any(f["check_id"] == "B11" for f in failures)
+    assert any("8 words" in f["description"] for f in failures)
+
+
 def test_caption_length_over_gbp_limit_fails() -> None:
     """D1 — caption longer than 1,500 chars on GBP fails."""
     caption = "a" * 1600

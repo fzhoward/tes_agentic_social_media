@@ -821,6 +821,83 @@ def test_validate_llm_output_requires_creative_hook_text() -> None:
     )
 
 
+def test_validate_creative_hook_allows_excerpt_sourced_overlap() -> None:
+    """validate_creative_hook_text permits a creative/caption overlap when the
+    overlapping (contained) hook is a substring of the selected review_excerpt.
+    Reproduces the live Larry case — faithful quotation of the review."""
+    excerpt = (
+        "When my skid steer died mid-job, I figured just go ahead and call "
+        "T.E.S. Rentals — best decision all week."
+    )
+    ok, reason = drafter.validate_creative_hook_text(
+        "Just go ahead and call",
+        "Just go ahead and call us today for a quote",
+        review_excerpt=excerpt,
+    )
+    _check(
+        "61. validate_creative_hook_text — overlap allowed when overlapping "
+        "phrase is a substring of the selected review_excerpt",
+        ok,
+        f"ok={ok}, reason={reason!r}",
+    )
+
+
+def test_validate_creative_hook_blocks_non_excerpt_overlap() -> None:
+    """validate_creative_hook_text still flags the same overlap when the phrase
+    is NOT in the selected excerpt (empty or unrelated). Non-quoted overlap
+    stays blocked."""
+    # Empty excerpt → identical to pre-exception behavior.
+    ok_empty, reason_empty = drafter.validate_creative_hook_text(
+        "Just go ahead and call",
+        "Just go ahead and call us today for a quote",
+        review_excerpt="",
+    )
+    # Unrelated excerpt that does not contain the phrase.
+    ok_other, reason_other = drafter.validate_creative_hook_text(
+        "Just go ahead and call",
+        "Just go ahead and call us today for a quote",
+        review_excerpt="Great machines, fair prices, quick turnaround every time.",
+    )
+    _check(
+        "62. validate_creative_hook_text — overlap still blocked when phrase is "
+        "absent from the excerpt (empty or unrelated)",
+        (not ok_empty) and "overlap" in reason_empty.lower()
+        and (not ok_other) and "overlap" in reason_other.lower(),
+        f"empty_ok={ok_empty} ({reason_empty!r}), "
+        f"other_ok={ok_other} ({reason_other!r})",
+    )
+
+
+def test_validate_llm_output_passes_review_post_with_quoted_overlap() -> None:
+    """validate_llm_output emits no overlap issue for a social-proof post whose
+    caption_hook and creative_hook_text overlap on excerpt-sourced text and
+    whose review_excerpt contains that text."""
+    parsed = {
+        "caption_hook": "Just go ahead and call us today for a quote",
+        "caption_body": "Body content line one.\n\nLine two.",
+        "cta_text": "",
+        "image_overlay_hook": "",
+        "creative_hook_text": "Just go ahead and call",
+        "review_excerpt": (
+            "When my skid steer died mid-job, I figured just go ahead and "
+            "call T.E.S. Rentals — best decision all week."
+        ),
+        "first_comment": "",
+        "draft_rationale": "rationale",
+    }
+    issues, _ = drafter.validate_llm_output(
+        parsed, "FALSE", "facebook", "brand_awareness",
+        "save", "image2_enhanced",
+    )
+    has_overlap_issue = any("overlap" in i.lower() for i in issues)
+    _check(
+        "63. validate_llm_output — review post with excerpt-sourced hook "
+        "overlap passes (no overlap issue)",
+        not has_overlap_issue,
+        f"issues={issues}",
+    )
+
+
 def test_build_drafter_messages_describes_creative_hook_text() -> None:
     """Verify the LLM prompt instructs the model to produce a distinct,
     ≤7-word creative_hook_text and includes it in the output schema."""
@@ -2582,6 +2659,9 @@ def run_tests(run_live: bool) -> int:
     test_creative_hook_text_validation_max_words()
     test_creative_hook_text_validation_distinct_from_caption()
     test_validate_llm_output_requires_creative_hook_text()
+    test_validate_creative_hook_allows_excerpt_sourced_overlap()
+    test_validate_creative_hook_blocks_non_excerpt_overlap()
+    test_validate_llm_output_passes_review_post_with_quoted_overlap()
     test_build_drafter_messages_describes_creative_hook_text()
     test_generate_media_creatomate_text_overlay_uses_creative_hook_text()
     test_generate_media_creatomate_video_uses_creative_hook_text()
