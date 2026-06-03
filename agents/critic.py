@@ -198,6 +198,7 @@ CQ_FIRST_COMMENT = "first_comment"
 CQ_CTA_TEXT = "cta_text"
 CQ_HOOK_TEXT = "hook_text"
 CQ_IMAGE_OVERLAY_TEXT = "image_overlay_text"
+CQ_REVIEW_EXCERPT = "review_excerpt"
 
 CQ_CRITIC_SCORE = "critic_score"
 CQ_CRITIC_NOTES = "critic_notes"
@@ -733,8 +734,20 @@ def check_caption_target_range(
 def check_creative_hook_text(
     creative_hook: str,
     caption_hook: str,
+    review_excerpt: str = "",
 ) -> list[dict]:
-    """B11 — creative_hook_text ≤ 7 words AND distinct from caption_hook."""
+    """B11 — creative_hook_text ≤ 7 words AND distinct from caption_hook.
+
+    Review-sourced exception (overlap sub-check only): on Social Proof posts
+    the Drafter faithfully quotes the customer's words, so the same phrase can
+    legitimately appear in both hooks. When an overlap is detected, the
+    overlapping portion (the shorter, contained hook) is permitted if it is a
+    substring of the SELECTED ``review_excerpt`` (case-insensitive) — i.e. text
+    actually quoted in this post. Kept in lockstep with the Drafter's
+    ``validate_creative_hook_text``. ``review_excerpt`` defaults to empty, so
+    non-review drafts behave exactly as before. The ≤7-word and empty-hook
+    sub-checks are unaffected.
+    """
     failures: list[dict] = []
     h = (creative_hook or "").strip()
     if not h:
@@ -770,19 +783,24 @@ def check_creative_hook_text(
     ch = (caption_hook or "").strip().lower()
     lh = h.lower()
     if ch and (lh in ch or ch in lh):
-        failures.append(_make_failure(
-            check_id="B11",
-            location="creative_hook_text field",
-            description=(
-                f"creative_hook_text overlaps with caption_hook: "
-                f"creative={h!r}, caption_hook={caption_hook!r}"
-            ),
-            fix_instruction=(
-                "Rewrite creative_hook_text so neither it nor caption_hook "
-                "is a substring of the other. Choose a different angle for "
-                "the visual hook."
-            ),
-        ))
+        # The overlapping portion is whichever hook is contained in the other.
+        contained = lh if lh in ch else ch
+        excerpt_norm = (review_excerpt or "").strip().lower()
+        review_sourced = bool(excerpt_norm) and contained in excerpt_norm
+        if not review_sourced:
+            failures.append(_make_failure(
+                check_id="B11",
+                location="creative_hook_text field",
+                description=(
+                    f"creative_hook_text overlaps with caption_hook: "
+                    f"creative={h!r}, caption_hook={caption_hook!r}"
+                ),
+                fix_instruction=(
+                    "Rewrite creative_hook_text so neither it nor caption_hook "
+                    "is a substring of the other. Choose a different angle for "
+                    "the visual hook."
+                ),
+            ))
     return failures
 
 
@@ -1208,6 +1226,7 @@ def run_deterministic_checks(
     caption = str(row.get(CQ_CAPTION, "") or "")
     creative_hook = str(row.get(CQ_CREATIVE_HOOK_TEXT, "") or "")
     caption_hook = str(row.get(CQ_HOOK_TEXT, "") or "")
+    review_excerpt = str(row.get(CQ_REVIEW_EXCERPT, "") or "")
     platform = str(row.get(CQ_PLATFORM, "") or "")
     cta_type = str(row.get(CQ_CTA_TYPE, "") or "")
     media_url = str(row.get(CQ_MEDIA_URL, "") or "").strip()
@@ -1229,7 +1248,9 @@ def run_deterministic_checks(
     failures.extend(check_caption_target_range(
         caption, platform, str(row.get(CQ_MEDIA_FORMAT, "") or "")
     ))
-    failures.extend(check_creative_hook_text(creative_hook, caption_hook))
+    failures.extend(check_creative_hook_text(
+        creative_hook, caption_hook, review_excerpt,
+    ))
     failures.extend(check_caption_length(caption, platform))
     failures.extend(check_gbp_button(platform, cta_type, booking_url, website_url))
     failures.extend(check_one_cta(

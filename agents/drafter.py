@@ -194,6 +194,7 @@ CQ_MEDIA_URL = "media_url"
 CQ_MEDIA_FORMAT_USED = "media_format_used"
 CQ_DRAFT_RATIONALE = "draft_rationale"
 CQ_REVISION_ROUND = "revision_round"
+CQ_REVIEW_EXCERPT = "review_excerpt"
 
 
 # Media formats that render a Creatomate equipment template whose Hook-Text
@@ -554,6 +555,7 @@ def validate_review_excerpt(
 def validate_creative_hook_text(
     creative_hook: str,
     caption_hook: str,
+    review_excerpt: str = "",
 ) -> tuple[bool, str]:
     """Return (ok, reason) for the creative_hook_text field.
 
@@ -562,6 +564,14 @@ def validate_creative_hook_text(
       - At most 7 words.
       - Distinct from caption_hook: neither string is a case-insensitive
         substring of the other. Same-text counts as overlap.
+
+    Review-sourced exception: on Social Proof posts the Drafter faithfully
+    quotes the customer's words, so the same phrase can legitimately land in
+    both hooks. When an overlap is detected, the overlapping portion (the
+    shorter, contained hook) is permitted if it is itself a substring of the
+    SELECTED ``review_excerpt`` (case-insensitive) — i.e. the overlap is text
+    actually quoted in this post. ``review_excerpt`` defaults to empty, so
+    non-review callers behave exactly as before.
     """
     h = (creative_hook or "").strip()
     if not h:
@@ -575,10 +585,14 @@ def validate_creative_hook_text(
     ch = (caption_hook or "").strip().lower()
     lh = h.lower()
     if ch and (lh in ch or ch in lh):
-        return False, (
-            "creative_hook_text overlaps with caption_hook — it must be a "
-            "distinct hook, not a substring of caption_hook (or vice versa)"
-        )
+        # The overlapping portion is whichever hook is contained in the other.
+        contained = lh if lh in ch else ch
+        excerpt_norm = (review_excerpt or "").strip().lower()
+        if not (excerpt_norm and contained in excerpt_norm):
+            return False, (
+                "creative_hook_text overlaps with caption_hook — it must be a "
+                "distinct hook, not a substring of caption_hook (or vice versa)"
+            )
     return True, ""
 
 
@@ -631,13 +645,16 @@ def validate_llm_output(
     cta_text = str(parsed.get("cta_text", "") or "").strip()
     overlay = str(parsed.get("image_overlay_hook", "") or "").strip()
     creative_hook = str(parsed.get("creative_hook_text", "") or "").strip()
+    review_excerpt = str(parsed.get("review_excerpt", "") or "").strip()
 
     if not hook:
         issues.append("caption_hook is empty")
     if not body:
         issues.append("caption_body is empty")
 
-    ok_creative, reason_creative = validate_creative_hook_text(creative_hook, hook)
+    ok_creative, reason_creative = validate_creative_hook_text(
+        creative_hook, hook, review_excerpt
+    )
     if not ok_creative:
         issues.append(reason_creative)
 
@@ -2496,6 +2513,7 @@ def draft_single_row(
             CQ_MEDIA_FORMAT_USED: media_format_used,
             CQ_DRAFT_RATIONALE: draft_rationale,
             CQ_REVISION_ROUND: str(revision_round),
+            CQ_REVIEW_EXCERPT: selected_review_excerpt,
         }
         if image_id:
             updates[CQ_SOURCE_IMAGE] = image_id
