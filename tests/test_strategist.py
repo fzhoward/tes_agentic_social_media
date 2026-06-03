@@ -15,7 +15,7 @@ import io
 import os
 import sys
 import traceback
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1040,6 +1040,309 @@ def test_enforce_video_cap_covers_review_video() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Group 1 — _format_strategist_slack_summary (pure dict -> str)
+# ---------------------------------------------------------------------------
+# These assert on stable, load-bearing substrings (header text, counts,
+# platform names, the truncation marker) rather than whole-string equality, so
+# cosmetic wording tweaks don't break the suite.
+
+
+def _clean_success_result() -> dict:
+    """A result dict matching run()'s success shape with no problems."""
+    return {
+        "status": "success",
+        "posts_planned": 6,
+        "planning_window_start": "2026-05-27",
+        "planning_window_end": "2026-06-03",
+        "by_platform": {"facebook": 3, "instagram": 2, "gbp": 1},
+        "by_objective": {"brand_awareness": 4, "lead_generation": 2},
+        "by_content_type": {},
+        "by_media_format": {},
+        "skipped_platforms": [],
+        "queue_depth_warnings": [],
+        "validation_warnings": [],
+        "errors": [],
+        "dry_run": False,
+    }
+
+
+def test_slack_summary_clean_success() -> None:
+    summary = strategist._format_strategist_slack_summary(_clean_success_result())
+    _check(
+        "25. slack_summary clean success — Run Complete header, count, window, "
+        "by-platform breakdown",
+        "Strategist — Run Complete" in summary
+        and "ATTENTION" not in summary
+        and "Posts planned: 6" in summary
+        and "2026-05-27 to 2026-06-03" in summary
+        and "facebook: 3" in summary
+        and "instagram: 2" in summary,
+        f"summary={summary!r}",
+    )
+
+
+def test_slack_summary_skipped_platforms() -> None:
+    result = _clean_success_result()
+    result["posts_planned"] = 4
+    result["by_platform"] = {"gbp": 4}
+    result["skipped_platforms"] = ["facebook", "instagram"]
+    summary = strategist._format_strategist_slack_summary(result)
+    _check(
+        "26. slack_summary skipped platforms — ATTENTION header names skipped "
+        "platforms",
+        "⚠️ Strategist — ATTENTION" in summary
+        and "facebook" in summary
+        and "instagram" in summary,
+        f"summary={summary!r}",
+    )
+
+
+def test_slack_summary_error_shape() -> None:
+    # Build the real _error_result shape — it omits the by_* / window / warning
+    # keys entirely. This proves the .get(...)-with-defaults defensive reads
+    # don't KeyError on the error path.
+    result = strategist._error_result(
+        datetime(2026, 5, 25, 9, 0, 0, tzinfo=strategist.ET),
+        "catalog.spec_sheet_id is empty in config",
+        dry_run=True,
+    )
+    raised = False
+    summary = ""
+    try:
+        summary = strategist._format_strategist_slack_summary(result)
+    except Exception as exc:  # noqa: BLE001
+        raised = True
+        summary = f"{type(exc).__name__}: {exc}"
+    _check(
+        "27. slack_summary error shape — no KeyError on missing keys, ATTENTION "
+        "header, error text surfaced",
+        not raised
+        and "⚠️ Strategist — ATTENTION" in summary
+        and "catalog.spec_sheet_id is empty in config" in summary,
+        f"raised={raised}, summary={summary!r}",
+    )
+
+
+def test_slack_summary_validation_warnings_with_posts() -> None:
+    result = _clean_success_result()
+    result["posts_planned"] = 5
+    result["by_platform"] = {"facebook": 5}
+    result["validation_warnings"] = [
+        "post with empty focus_equipment_id had equipment media_format "
+        "reassigned to 'image2_enhanced'",
+    ]
+    summary = strategist._format_strategist_slack_summary(result)
+    _check(
+        "28. slack_summary validation warnings with posts planned — ATTENTION "
+        "variant surfaces the warning content alongside the planned count",
+        "⚠️ Strategist — ATTENTION" in summary
+        and "Validation warnings" in summary
+        and "reassigned" in summary
+        and "Posts planned: 5" in summary,
+        f"summary={summary!r}",
+    )
+
+
+def test_slack_summary_truncates_long_warning_lists() -> None:
+    # The code truncates each warning/error list to the first 3, then appends a
+    # "… and N more" line. Supply 5 to exercise the cutoff.
+    warns = [f"warning-number-{i}" for i in range(5)]
+    result = _clean_success_result()
+    result["posts_planned"] = 3
+    result["by_platform"] = {"facebook": 3}
+    result["validation_warnings"] = warns
+    summary = strategist._format_strategist_slack_summary(result)
+    _check(
+        "29. slack_summary truncation — first 3 warnings shown, remainder folded "
+        "into '… and N more', later entries omitted",
+        "warning-number-0" in summary
+        and "warning-number-1" in summary
+        and "warning-number-2" in summary
+        and "warning-number-3" not in summary
+        and "warning-number-4" not in summary
+        and "… and 2 more" in summary,
+        f"summary={summary!r}",
+    )
+
+
+def test_slack_summary_zero_planned_is_problem() -> None:
+    # status=success but posts_planned=0 (the "nothing to plan" shape). The
+    # code treats zero-planned as a problem condition, so it leads with
+    # ATTENTION even though no warning lists are populated.
+    result = _clean_success_result()
+    result["posts_planned"] = 0
+    result["by_platform"] = {"facebook": 0, "instagram": 0, "gbp": 0}
+    summary = strategist._format_strategist_slack_summary(result)
+    _check(
+        "30. slack_summary zero planned, no other problems — ATTENTION "
+        "(zero-planned is itself a problem condition per the code)",
+        "⚠️ Strategist — ATTENTION" in summary
+        and "Posts planned: 0" in summary,
+        f"summary={summary!r}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 2 — _post_health_summary (side-effecting; the Slack post is faked)
+# ---------------------------------------------------------------------------
+# slack_helpers.post_message is monkeypatched onto the strategist module's
+# reference and restored in a finally block so fakes never leak between tests.
+# config is a minimal stub mirroring Config.get(key, default).
+
+
+class _FakeConfig:
+    """Minimal Config stand-in: .get(key, default) over a dict."""
+
+    def __init__(self, values: dict) -> None:
+        self._values = values
+
+    def get(self, key: str, default=None):  # type: ignore[no-untyped-def]
+        return self._values.get(key, default)
+
+
+def test_post_health_summary_dry_run_no_post() -> None:
+    calls: list = []
+    real = strategist.slack_helpers.post_message
+    strategist.slack_helpers.post_message = (
+        lambda *a, **k: calls.append((a, k))  # type: ignore[assignment]
+    )
+    try:
+        cfg = _FakeConfig({"health.slack_channel": "#system-health"})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            strategist._post_health_summary(
+                {"status": "success", "posts_planned": 3}, cfg, dry_run=True
+            )
+    finally:
+        strategist.slack_helpers.post_message = real
+    _check(
+        "31. _post_health_summary dry-run — never posts to Slack",
+        len(calls) == 0,
+        f"calls={calls}",
+    )
+
+
+def test_post_health_summary_posts_once() -> None:
+    calls: list = []
+    real = strategist.slack_helpers.post_message
+    strategist.slack_helpers.post_message = (
+        lambda channel, text, *a, **k: calls.append((channel, text))  # type: ignore[assignment]
+    )
+    try:
+        cfg = _FakeConfig({"health.slack_channel": "#system-health"})
+        result = {
+            "status": "success",
+            "posts_planned": 4,
+            "by_platform": {"facebook": 4},
+        }
+        expected = strategist._format_strategist_slack_summary(result)
+        strategist._post_health_summary(result, cfg, dry_run=False)
+    finally:
+        strategist.slack_helpers.post_message = real
+    _check(
+        "32. _post_health_summary non-dry-run — posts exactly once to the "
+        "configured channel with the formatted summary text",
+        len(calls) == 1
+        and calls[0][0] == "#system-health"
+        and calls[0][1] == expected,
+        f"calls={calls!r}",
+    )
+
+
+def test_post_health_summary_empty_channel_skips() -> None:
+    calls: list = []
+    real = strategist.slack_helpers.post_message
+    strategist.slack_helpers.post_message = (
+        lambda *a, **k: calls.append(a)  # type: ignore[assignment]
+    )
+    raised = False
+    err = io.StringIO()
+    try:
+        cfg = _FakeConfig({})  # no health.slack_channel
+        try:
+            with redirect_stderr(err):
+                strategist._post_health_summary(
+                    {"status": "success", "posts_planned": 2}, cfg, dry_run=False
+                )
+        except Exception:  # noqa: BLE001
+            raised = True
+    finally:
+        strategist.slack_helpers.post_message = real
+    _check(
+        "33. _post_health_summary empty channel — no post, no raise, WARN logged",
+        len(calls) == 0 and not raised and "slack_channel" in err.getvalue(),
+        f"calls={calls}, raised={raised}, stderr={err.getvalue()!r}",
+    )
+
+
+def test_post_health_summary_swallows_slack_failure() -> None:
+    real = strategist.slack_helpers.post_message
+
+    def _boom(*a, **k):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    strategist.slack_helpers.post_message = _boom  # type: ignore[assignment]
+    raised = False
+    err = io.StringIO()
+    try:
+        cfg = _FakeConfig({"health.slack_channel": "#system-health"})
+        try:
+            with redirect_stderr(err):
+                strategist._post_health_summary(
+                    {"status": "success", "posts_planned": 1}, cfg, dry_run=False
+                )
+        except Exception:  # noqa: BLE001
+            raised = True
+    finally:
+        strategist.slack_helpers.post_message = real
+    _check(
+        "34. _post_health_summary — Slack exception is swallowed (a Slack outage "
+        "can never fail a planning run)",
+        not raised and "Slack post failed" in err.getvalue(),
+        f"raised={raised}, stderr={err.getvalue()!r}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 3 — run() single-exit wrapper integrity (no API, no live Slack)
+# ---------------------------------------------------------------------------
+
+
+def test_run_wrapper_threads_result_and_dry_run() -> None:
+    # Monkeypatch the planning pass to a canned success dict and the Slack post
+    # to a recorder, then call the public run(dry_run=True). The wrapper must
+    # return the canned dict unchanged and, under dry-run, post nothing live.
+    canned = {
+        "status": "success",
+        "posts_planned": 7,
+        "dry_run": True,
+        "by_platform": {"facebook": 7},
+    }
+    calls: list = []
+    real_plan = strategist._run_planning
+    real_post = strategist.slack_helpers.post_message
+    strategist._run_planning = (
+        lambda dry_run, config: dict(canned)  # type: ignore[assignment]
+    )
+    strategist.slack_helpers.post_message = (
+        lambda *a, **k: calls.append((a, k))  # type: ignore[assignment]
+    )
+    try:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            out = strategist.run(dry_run=True)
+    finally:
+        strategist._run_planning = real_plan
+        strategist.slack_helpers.post_message = real_post
+    _check(
+        "35. run() wrapper — returns the planning result unchanged and threads "
+        "dry_run (no live Slack post)",
+        out == canned and len(calls) == 0,
+        f"out={out!r}, calls={calls}",
+    )
+
+
 def test_dry_run_full(config) -> None:  # type: ignore[no-untyped-def]
     # =================================================================
     # INTEGRATION TEST — calls the live Anthropic API. COSTS MONEY.
@@ -1143,6 +1446,20 @@ def run_tests() -> int:
     test_enforce_review_consistency()
     test_enforce_image_coverage_skips_review_formats()
     test_enforce_video_cap_covers_review_video()
+    # Group 1 — Slack health summary formatting (pure function).
+    test_slack_summary_clean_success()
+    test_slack_summary_skipped_platforms()
+    test_slack_summary_error_shape()
+    test_slack_summary_validation_warnings_with_posts()
+    test_slack_summary_truncates_long_warning_lists()
+    test_slack_summary_zero_planned_is_problem()
+    # Group 2 — _post_health_summary (Slack post faked, no live call).
+    test_post_health_summary_dry_run_no_post()
+    test_post_health_summary_posts_once()
+    test_post_health_summary_empty_channel_skips()
+    test_post_health_summary_swallows_slack_failure()
+    # Group 3 — run() single-exit wrapper integrity (no API, no live Slack).
+    test_run_wrapper_threads_result_and_dry_run()
 
     print()
     print("Integration test (calls Anthropic API — COSTS MONEY):")
