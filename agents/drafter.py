@@ -85,6 +85,13 @@ CAPTION_TARGET_RANGE: dict[str, tuple[int, int]] = {
     "gbp": (600, 800),
 }
 
+# Review/social-proof posts (media_format in REVIEW_MEDIA_FORMATS) are anchored
+# to one short customer review (~500-600 honest chars); the platform floor would
+# force padding, so review content targets a flat 500-char floor on every
+# platform (ceiling unchanged). Kept in lockstep with the Critic's
+# REVIEW_CAPTION_FLOOR — same number drives target and QA.
+REVIEW_CAPTION_FLOOR: int = 500
+
 # Strict output rules per CTA type. Enforced via prompt-level instruction in
 # build_drafter_messages so the LLM doesn't drift into hybrid CTAs (e.g.,
 # adding a phone number to a "save" CTA because it saw one in the brand voice).
@@ -1024,6 +1031,8 @@ def build_drafter_messages(
     target_range = CAPTION_TARGET_RANGE.get(platform)
     if target_range is not None:
         target_min, target_max = target_range
+        if media_format in REVIEW_MEDIA_FORMATS:
+            target_min = REVIEW_CAPTION_FLOOR
         caption_target_block = (
             f"Caption length target: your total caption (hook + body + CTA "
             f"combined) for this {platform_display} post must be "

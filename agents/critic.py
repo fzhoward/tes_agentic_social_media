@@ -52,6 +52,21 @@ CAPTION_TARGET_RANGE: dict[str, tuple[int, int]] = {
     "gbp": (600, 800),
 }
 
+# Review/social-proof posts are anchored to one short customer review
+# (~500-600 honest chars). Platform floors of 600 (GBP) / 800 (IG) force the
+# Drafter to pad to reach the minimum, so review content uses a flat 500-char
+# floor on every platform. The ceiling continues to come from the platform's
+# existing CAPTION_TARGET_RANGE upper bound.
+REVIEW_CAPTION_FLOOR: int = 500
+
+# Media formats that signal review/social-proof content. Matches the
+# Strategist/Drafter REVIEW_MEDIA_FORMATS set — the deterministic signal for
+# review content (do not key on review_id alone).
+REVIEW_MEDIA_FORMATS: set[str] = {
+    "creatomate_review_image",
+    "creatomate_review_video",
+}
+
 CREATIVE_HOOK_MAX_WORDS: int = 7
 
 SENTENCE_MAX_WORDS: int = 18
@@ -666,13 +681,24 @@ def check_sentence_length(caption: str) -> list[dict]:
     return failures
 
 
-def check_caption_target_range(caption: str, platform: str) -> list[dict]:
-    """B8 — caption falls within per-platform target range."""
+def check_caption_target_range(
+    caption: str,
+    platform: str,
+    media_format: str = "",
+) -> list[dict]:
+    """B8 — caption falls within per-platform target range.
+
+    Review/social-proof posts (media_format in REVIEW_MEDIA_FORMATS) use a flat
+    REVIEW_CAPTION_FLOOR floor on every platform; the ceiling stays the
+    platform's existing CAPTION_TARGET_RANGE upper bound.
+    """
     plat = (platform or "").strip().lower()
     target = CAPTION_TARGET_RANGE.get(plat)
     if target is None:
         return []
     lo, hi = target
+    if media_format.strip() in REVIEW_MEDIA_FORMATS:
+        lo = REVIEW_CAPTION_FLOOR
     n = len(caption or "")
     if n < lo:
         return [_make_failure(
@@ -1200,7 +1226,9 @@ def run_deterministic_checks(
     failures.extend(check_fragment_lines(caption))
     failures.extend(check_hook_duplication(caption))
     failures.extend(check_sentence_length(caption))
-    failures.extend(check_caption_target_range(caption, platform))
+    failures.extend(check_caption_target_range(
+        caption, platform, str(row.get(CQ_MEDIA_FORMAT, "") or "")
+    ))
     failures.extend(check_creative_hook_text(creative_hook, caption_hook))
     failures.extend(check_caption_length(caption, platform))
     failures.extend(check_gbp_button(platform, cta_type, booking_url, website_url))
