@@ -10,7 +10,8 @@ agent logic (per CLAUDE.md).
 Endpoints:
     GET  /healthz                       liveness probe (no auth)
     POST /run/indexer                   Asset Indexer — bearer auth
-    POST /run/strategist                Strategist — bearer auth
+    POST /run/strategist                Strategist — bearer auth,
+                                        async (202 + background thread)
     POST /run/draft-cycle               Front-half revision loop — bearer auth,
                                         async (202 + background thread)
     POST /run/approval-card             Make Scenario 5 — bearer auth
@@ -27,7 +28,9 @@ Auth:
     synchronous subprocess cap, so it runs in a background thread (like
     /slack/interactivity) and returns 202 immediately; the cycle writes its
     results to the Content Queue and logs its final JSON to stdout for
-    journalctl.
+    journalctl. /run/strategist follows the same pattern — it makes many
+    sequential LLM calls, so it runs in a background thread, returns 202, and
+    posts a #system-health Slack summary in addition to logging to stdout.
 
 Environment (loaded from .env via python-dotenv):
     EXECUTOR_TOKEN         shared secret for the Make-triggered endpoints
@@ -70,6 +73,9 @@ _SUBPROCESS_TIMEOUT = 120
 # Generous cap for the draft-cycle, which does N rows x multiple LLM calls. It
 # runs in a background thread, so a long cap does not block the request.
 _DRAFT_CYCLE_TIMEOUT = 60 * 30
+# Generous cap for the Strategist, which makes many sequential LLM calls. It
+# runs in a background thread, so a long cap does not block the request.
+_STRATEGIST_TIMEOUT = 60 * 30
 
 app = Flask(__name__)
 
@@ -187,14 +193,29 @@ def run_indexer() -> Response:
     )
 
 
+def _dispatch_strategist() -> None:
+    """Background worker: run the Strategist planning pass to completion."""
+    code, result = _run_cli(
+        ["agents.strategist"], timeout=_STRATEGIST_TIMEOUT
+    )
+    print(
+        json.dumps(
+            {"strategist_exit_code": code, "strategist_result": result}
+        ),
+        flush=True,
+    )
+
+
 @app.post("/run/strategist")
 def run_strategist() -> Response:
     if not _check_bearer():
         return jsonify({"success": False, "error": "unauthorized"}), 401
-    code, result = _run_cli(["agents.strategist"])
-    return jsonify({"exit_code": code, "result": result}), (
-        200 if code == 0 else 500
-    )
+    # The Strategist makes many sequential LLM calls and exceeds the sync
+    # cap, so run it in the background and acknowledge immediately so Make's
+    # poke does not hang. Results land in the Content Queue + a #system-health
+    # Slack summary + stdout (journalctl).
+    threading.Thread(target=_dispatch_strategist, daemon=True).start()
+    return jsonify({"accepted": True}), 202
 
 
 def _dispatch_draft_cycle() -> None:

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from tools import sheets_helpers, skill_loader
+from tools import sheets_helpers, skill_loader, slack_helpers
 from tools.config_loader import Config, load_config
 
 
@@ -1365,11 +1365,135 @@ def _try_load_skill(name: str, config: Config, default: str = "") -> str:
         return default
 
 
+# --- Slack health summary ---
+
+def _format_strategist_slack_summary(result: dict) -> str:
+    """Build the plain-text #system-health summary for a Strategist run.
+
+    Reads only fields present on run()'s result dict, all via .get with
+    defaults so the error path — which omits the by_* / window / warning keys —
+    still renders cleanly. Leads with problem details when any are present
+    (so the unattended weekly run has a visible failure surface); otherwise a
+    plain success summary with the planned count, window, and platform split.
+    """
+    status = str(result.get("status", "")).strip()
+    posts_planned = int(result.get("posts_planned", 0) or 0)
+    errors = result.get("errors") or []
+    skipped = result.get("skipped_platforms") or []
+    queue_warnings = result.get("queue_depth_warnings") or []
+    validation_warnings = result.get("validation_warnings") or []
+
+    has_problem = (
+        status == "error"
+        or posts_planned == 0
+        or bool(errors)
+        or bool(skipped)
+        or bool(queue_warnings)
+        or bool(validation_warnings)
+    )
+
+    def _bulleted(label: str, items: list, limit: int = 3) -> list[str]:
+        """Header line for a warning/error list plus up to `limit` entries."""
+        out = [f"• {label} ({len(items)}):"]
+        for entry in items[:limit]:
+            out.append(f"  - {entry}")
+        if len(items) > limit:
+            out.append(f"  - … and {len(items) - limit} more")
+        return out
+
+    lines: list[str] = []
+
+    if has_problem:
+        # Match the Indexer's existing ⚠️ marker convention for #system-health
+        # action-needed messages. Lead with the problem details, most
+        # actionable first, before the routine planned-count breakdown.
+        lines.append("⚠️ Strategist — ATTENTION")
+        if errors:
+            lines.extend(_bulleted("Errors", errors))
+        if skipped:
+            lines.append(
+                f"• Platforms skipped (queue full): {', '.join(skipped)}"
+            )
+        if queue_warnings:
+            lines.extend(_bulleted("Queue-depth warnings", queue_warnings))
+        if validation_warnings:
+            lines.extend(
+                _bulleted("Validation warnings", validation_warnings)
+            )
+    else:
+        lines.append("Strategist — Run Complete")
+
+    # Routine summary lines — always included, after any problem block.
+    lines.append(f"• Posts planned: {posts_planned}")
+
+    window_start = result.get("planning_window_start")
+    window_end = result.get("planning_window_end")
+    if window_start and window_end:
+        lines.append(f"• Planning window: {window_start} to {window_end}")
+
+    by_platform = result.get("by_platform") or {}
+    if by_platform:
+        breakdown = ", ".join(f"{p}: {n}" for p, n in by_platform.items())
+        lines.append(f"• By platform: {breakdown}")
+
+    if result.get("dry_run"):
+        lines.append("• (dry run — no rows written)")
+
+    return "\n".join(lines)
+
+
+def _post_health_summary(result: dict, config: Config, dry_run: bool) -> None:
+    """Post the Strategist run summary to #system-health (best-effort).
+
+    Mirrors the Asset Indexer's posture: never raises (a Slack failure must
+    not change the run's outcome) and is skipped under dry-run, where it prints
+    what would have been posted instead.
+    """
+    summary = _format_strategist_slack_summary(result)
+    if dry_run:
+        print(
+            f"[strategist] DRY RUN — would post to #system-health:\n{summary}",
+            file=sys.stderr,
+        )
+        return
+    health_channel = config.get("health.slack_channel")
+    if not health_channel:
+        print(
+            "[strategist] WARN: health.slack_channel is empty — skipping "
+            "Slack summary",
+            file=sys.stderr,
+        )
+        return
+    try:
+        slack_helpers.post_message(health_channel, summary)
+    except Exception as exc:
+        print(
+            f"[strategist] WARN: Slack post failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
 # --- Step 1-12: Orchestrator ---
 
 def run(dry_run: bool = False) -> dict:
-    """Execute the Strategist end-to-end. Returns the structured result dict."""
+    """Execute the Strategist end-to-end and post a #system-health summary.
+
+    The planning work lives in _run_planning, which has many early exits
+    (config errors, "nothing to plan", LLM/parse failures, the final success).
+    Rather than scatter a Slack post across every one of those returns, this
+    wrapper gives the run a single exit: it runs the planning pass, posts the
+    summary from one place (dry-run-gated, best-effort), then returns the
+    unchanged result dict so the CLI's stdout JSON contract is preserved.
+    """
     config: Config = load_config()
+    result = _run_planning(dry_run=dry_run, config=config)
+    _post_health_summary(result, config, dry_run)
+    return result
+
+
+def _run_planning(dry_run: bool, config: Config) -> dict:
+    """Plan the calendar end-to-end. Returns the structured result dict."""
     run_ts = _now_et()
 
     # Load SOP (reference only; non-fatal on failure).
