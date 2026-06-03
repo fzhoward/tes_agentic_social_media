@@ -575,6 +575,71 @@ def test_caption_target_range_in_band_on_gbp() -> None:
     assert failures == []
 
 
+def test_review_content_floor_500_passes_below_platform_floor_gbp() -> None:
+    """B8 — review content on GBP at 530 chars passes (flat 500 floor, not 600).
+
+    Reproduces the live GBP review row (529 chars) that wrongly failed under
+    the old platform floor. Core lock for the review-content floor.
+    """
+    caption = "a" * 530
+    assert len(caption) == 530  # below GBP platform floor (600), above 500
+    failures = critic.check_caption_target_range(
+        caption, "gbp", "creatomate_review_image"
+    )
+    assert not any(f["check_id"] == "B8" for f in failures)
+
+
+def test_review_content_floor_500_passes_below_platform_floor_ig() -> None:
+    """B8 — review content on Instagram at 570 chars passes (flat 500 floor).
+
+    Reproduces the live IG review row (570 chars) that wrongly failed under
+    the old IG platform floor (800).
+    """
+    caption = "a" * 570
+    assert len(caption) == 570  # below IG platform floor (800), above 500
+    failures = critic.check_caption_target_range(
+        caption, "instagram", "creatomate_review_image"
+    )
+    assert not any(f["check_id"] == "B8" for f in failures)
+
+
+def test_review_content_below_500_still_fails() -> None:
+    """B8 — review content below even the 500 review floor still fails."""
+    caption = "a" * 450
+    assert len(caption) == 450  # below the review floor (500)
+    failures = critic.check_caption_target_range(
+        caption, "gbp", "creatomate_review_video"
+    )
+    assert any(f["check_id"] == "B8" for f in failures)
+
+
+def test_non_review_content_keeps_platform_floor() -> None:
+    """B8 — non-review content at 530 chars on GBP still fails (600 floor).
+
+    Proves the flat 500 review floor does not leak into normal content.
+    """
+    caption = "a" * 530
+    assert len(caption) == 530  # below GBP platform floor (600)
+    failures = critic.check_caption_target_range(
+        caption, "gbp", "image2_text_overlay"
+    )
+    assert any(f["check_id"] == "B8" for f in failures)
+
+
+def test_review_content_respects_platform_ceiling() -> None:
+    """B8 — review content above the GBP ceiling (800) still fails.
+
+    The floor change does not touch the upper bound; over-ceiling is a B8
+    failure (matches the live high-on-gbp behavior).
+    """
+    caption = "a" * 850
+    assert len(caption) == 850  # above GBP ceiling (800)
+    failures = critic.check_caption_target_range(
+        caption, "gbp", "creatomate_review_image"
+    )
+    assert any(f["check_id"] == "B8" for f in failures)
+
+
 def test_gbp_button_call_no_url_required() -> None:
     """D5/D6 — GBP CALL button does not require a URL."""
     failures = critic.check_gbp_button("gbp", "call", booking_url="", website_url="")
