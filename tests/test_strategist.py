@@ -740,16 +740,16 @@ def test_enforce_equipment_format_requires_focus_video() -> None:
 
     _check(
         "18. enforce_equipment_format_requires_focus — reassigns video and "
-        "still-equipment image2_enhanced rows when focus is empty; leaves "
+        "no-focus image2_enhanced rows to image2_generated; leaves "
         "video-with-focus alone",
         len(warnings) == 2
-        and bad_video[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced"
+        and bad_video[strategist.CQ_MEDIA_FORMAT] == "image2_generated"
         and bad_video[strategist.CQ_TEXT_OVERLAY] == "FALSE"
         and good_video[strategist.CQ_MEDIA_FORMAT] == "creatomate_video"
-        # image2_enhanced with empty focus stays on image2_enhanced (the
-        # replacement is the same format) but still emits a warning so
-        # downstream operators see the issue.
-        and bad_image[strategist.CQ_MEDIA_FORMAT] == "image2_enhanced",
+        # image2_enhanced with empty focus is now reassigned to the
+        # image2_generated infographic path (not a media-less dead-end) and
+        # still emits a warning so downstream operators see the issue.
+        and bad_image[strategist.CQ_MEDIA_FORMAT] == "image2_generated",
         f"warnings={warnings}, bad_video_fmt={bad_video[strategist.CQ_MEDIA_FORMAT]!r}, "
         f"good_video_fmt={good_video[strategist.CQ_MEDIA_FORMAT]!r}, "
         f"bad_image_fmt={bad_image[strategist.CQ_MEDIA_FORMAT]!r}",
@@ -759,8 +759,8 @@ def test_enforce_equipment_format_requires_focus_video() -> None:
 def test_enforce_equipment_format_requires_focus_all_equipment_formats() -> None:
     """All four equipment formats — image2_enhanced, image2_text_overlay,
     creatomate_text_overlay, creatomate_video — get reassigned to
-    image2_enhanced when focus_equipment_id is empty. Review formats are
-    untouched (they don't need a source equipment photo)."""
+    image2_generated (the infographic path) when focus_equipment_id is empty.
+    Review formats are untouched (they don't need a source equipment photo)."""
     posts = [
         {strategist.CQ_FOCUS_EQUIPMENT: "",
          strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
@@ -794,13 +794,13 @@ def test_enforce_equipment_format_requires_focus_all_equipment_formats() -> None
     formats_after = [p[strategist.CQ_MEDIA_FORMAT] for p in posts]
     overlay_after = [p[strategist.CQ_TEXT_OVERLAY] for p in posts]
 
-    # All four equipment-format posts → image2_enhanced (and text_overlay
-    # refreshed to FALSE since image2_enhanced is not a text-overlay format).
+    # All four equipment-format posts → image2_generated (and text_overlay
+    # refreshed to FALSE since image2_generated is not a text-overlay format).
     equipment_all_reassigned = (
-        formats_after[0] == "image2_enhanced"
-        and formats_after[1] == "image2_enhanced"
-        and formats_after[2] == "image2_enhanced"
-        and formats_after[3] == "image2_enhanced"
+        formats_after[0] == "image2_generated"
+        and formats_after[1] == "image2_generated"
+        and formats_after[2] == "image2_generated"
+        and formats_after[3] == "image2_generated"
     )
     text_overlay_refreshed = (
         overlay_after[0] == "FALSE"
@@ -815,12 +815,181 @@ def test_enforce_equipment_format_requires_focus_all_equipment_formats() -> None
 
     _check(
         "18b. enforce_equipment_format_requires_focus — all 4 equipment "
-        "formats reassigned; text_overlay refreshed; review formats untouched",
+        "formats reassigned to image2_generated; text_overlay refreshed; "
+        "review formats untouched",
         equipment_all_reassigned
         and text_overlay_refreshed
         and review_untouched
         and len(warnings) == 4,
         f"formats={formats_after}, overlays={overlay_after}, warnings={warnings}",
+    )
+
+
+# ----------------------------------------------------------------------
+# image2_generated routing (Build 3A) — infographic path for no-focus rows
+# ----------------------------------------------------------------------
+
+
+def test_enforce_reassigns_to_image2_generated() -> None:
+    """A no-focus equipment-format row (image2_enhanced, empty focus) is
+    reassigned to image2_generated (the new default) and a warning is emitted."""
+    posts = [
+        {strategist.CQ_PLATFORM: "facebook",
+         strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T09:00:00-04:00"},
+    ]
+    warnings = strategist.enforce_equipment_format_requires_focus(posts)
+    _check(
+        "36. enforce_equipment_format_requires_focus — no-focus equipment row "
+        "reassigned to image2_generated with a warning",
+        posts[0][strategist.CQ_MEDIA_FORMAT] == "image2_generated"
+        and posts[0][strategist.CQ_TEXT_OVERLAY] == "FALSE"
+        and len(warnings) == 1
+        and "image2_generated" in warnings[0],
+        f"post={posts[0]!r}, warnings={warnings}",
+    )
+
+
+def test_enforce_image2_generated_not_reassigned_again() -> None:
+    """A row already on image2_generated with empty focus is NOT reassigned
+    (image2_generated is not in EQUIPMENT_MEDIA_FORMATS), so there is no
+    infinite-reassign — it is left untouched and emits no warning."""
+    posts = [
+        {strategist.CQ_PLATFORM: "facebook",
+         strategist.CQ_FOCUS_EQUIPMENT: "",
+         strategist.CQ_MEDIA_FORMAT: "image2_generated",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T09:00:00-04:00"},
+    ]
+    warnings = strategist.enforce_equipment_format_requires_focus(posts)
+    _check(
+        "37. enforce_equipment_format_requires_focus — image2_generated row with "
+        "empty focus is left alone (no re-reassign, no warning)",
+        posts[0][strategist.CQ_MEDIA_FORMAT] == "image2_generated"
+        and posts[0][strategist.CQ_TEXT_OVERLAY] == "FALSE"
+        and warnings == [],
+        f"post={posts[0]!r}, warnings={warnings}",
+    )
+
+
+def test_enforce_focus_equipment_row_untouched() -> None:
+    """Regression: an equipment-format row WITH a focus_equipment_id is not
+    touched (it has the source photo it needs)."""
+    posts = [
+        {strategist.CQ_PLATFORM: "facebook",
+         strategist.CQ_FOCUS_EQUIPMENT: "TES-018",
+         strategist.CQ_MEDIA_FORMAT: "image2_enhanced",
+         strategist.CQ_TEXT_OVERLAY: "FALSE",
+         strategist.CQ_SCHEDULED: "2026-05-28T09:00:00-04:00"},
+    ]
+    warnings = strategist.enforce_equipment_format_requires_focus(posts)
+    _check(
+        "38. enforce_equipment_format_requires_focus — equipment row with a "
+        "focus_equipment_id is untouched (no reassign, no warning)",
+        posts[0][strategist.CQ_MEDIA_FORMAT] == "image2_enhanced"
+        and posts[0][strategist.CQ_FOCUS_EQUIPMENT] == "TES-018"
+        and warnings == [],
+        f"post={posts[0]!r}, warnings={warnings}",
+    )
+
+
+def test_image2_generated_constant_membership() -> None:
+    """Cheap, high-value invariants on the constants that make the routing
+    safe: valid format, but not equipment-reassignable, not LLM-offered, and
+    not a text-overlay format."""
+    f = "image2_generated"
+    _check(
+        "39. image2_generated constants — in MEDIA_FORMATS; NOT in "
+        "EQUIPMENT_MEDIA_FORMATS / LLM_SELECTABLE_MEDIA_FORMATS / "
+        "TEXT_OVERLAY_FORMATS",
+        f in strategist.MEDIA_FORMATS
+        and f not in strategist.EQUIPMENT_MEDIA_FORMATS
+        and f not in strategist.LLM_SELECTABLE_MEDIA_FORMATS
+        and f not in strategist.TEXT_OVERLAY_FORMATS,
+        f"in_media={f in strategist.MEDIA_FORMATS}, "
+        f"in_equipment={f in strategist.EQUIPMENT_MEDIA_FORMATS}, "
+        f"in_llm={f in strategist.LLM_SELECTABLE_MEDIA_FORMATS}, "
+        f"in_overlay={f in strategist.TEXT_OVERLAY_FORMATS}",
+    )
+
+
+def test_llm_menu_excludes_image2_generated(config) -> None:  # type: ignore[no-untyped-def]
+    """The LLM-offered media_format menu (built in assemble_prompt) must NOT
+    list image2_generated, while a known selectable format (image2_enhanced)
+    IS listed."""
+    window_start = datetime(2026, 5, 27, 0, 0, 0, tzinfo=strategist.ET)
+    window_end = datetime(2026, 6, 3, 0, 0, 0, tzinfo=strategist.ET)
+    _system, user = strategist.assemble_prompt(
+        config=config,
+        active_platforms=["facebook"],
+        needed={"facebook": 1},
+        objective_correction={"summary": "(test summary)"},
+        eligible_items=[],
+        recent_queue_rows=[],
+        strategy_guidance="(strategy)",
+        brand_voice="(brand)",
+        cta_skill="(cta)",
+        platform_style="(platform)",
+        window_start=window_start,
+        window_end=window_end,
+        min_gap_hours=4,
+    )
+    # Isolate the schema menu line so we assert on the offered list specifically.
+    menu_line = next(
+        (ln for ln in user.splitlines() if "media_format: one of" in ln), ""
+    )
+    _check(
+        "40. assemble_prompt — media_format menu excludes image2_generated, "
+        "includes image2_enhanced",
+        menu_line != ""
+        and "image2_generated" not in menu_line
+        and "image2_enhanced" in menu_line
+        # Belt-and-suspenders: the format never appears anywhere in the prompt.
+        and "image2_generated" not in user,
+        f"menu_line={menu_line!r}",
+    )
+
+
+def test_validate_post_accepts_image2_generated() -> None:
+    """Format validation uses the FULL MEDIA_FORMATS set, so a row on
+    image2_generated passes the media_format validity check."""
+    window_start = datetime(2026, 5, 27, 0, 0, 0, tzinfo=strategist.ET)
+    window_end = datetime(2026, 6, 3, 0, 0, 0, tzinfo=strategist.ET)
+    active = {"facebook", "instagram", "gbp"}
+    eligible = {"TES-001", "TES-002"}
+    post = {
+        "platform": "facebook",
+        "scheduled_datetime": "2026-05-28T09:00:00-04:00",
+        "objective": "brand_awareness",
+        "content_type": "Educational Tip",
+        "focus_equipment_id": "",  # no-focus row, allowed
+        "angle": "Three things to check before renting a mini excavator",
+        "cta_type": "comment",
+        "media_format": "image2_generated",
+        "draft_notes": "",
+    }
+    ok, reason = strategist.validate_post(
+        post, eligible, active, window_start, window_end
+    )
+    _check(
+        "41. validate_post — accepts image2_generated as a valid media_format",
+        ok,
+        f"ok={ok}, reason={reason!r}",
+    )
+
+
+def test_derive_text_overlay_image2_generated() -> None:
+    """image2_generated bakes the headline into the image (no overlay step), so
+    derive_text_overlay returns the non-overlay value — same as image2_enhanced."""
+    got = strategist.derive_text_overlay("image2_generated")
+    _check(
+        "42. derive_text_overlay — image2_generated returns FALSE "
+        "(same as image2_enhanced)",
+        got == "FALSE"
+        and got == strategist.derive_text_overlay("image2_enhanced"),
+        f"got={got!r}",
     )
 
 
@@ -1440,6 +1609,14 @@ def run_tests() -> int:
     test_enforce_image_coverage_drops_zero_image_media_posts()
     test_enforce_equipment_format_requires_focus_video()
     test_enforce_equipment_format_requires_focus_all_equipment_formats()
+    # image2_generated routing (Build 3A).
+    test_enforce_reassigns_to_image2_generated()
+    test_enforce_image2_generated_not_reassigned_again()
+    test_enforce_focus_equipment_row_untouched()
+    test_image2_generated_constant_membership()
+    test_llm_menu_excludes_image2_generated(config)
+    test_validate_post_accepts_image2_generated()
+    test_derive_text_overlay_image2_generated()
     test_filter_usable_reviews()
     test_compact_review_line_contains_required_fields()
     test_validate_post_with_review_id()
