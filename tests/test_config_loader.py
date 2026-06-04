@@ -198,6 +198,56 @@ def run_tests() -> int:
         f"bad entries: {bad_workflows}",
     )
 
+    # --- brand_visuals.colors role tokens ---
+    accent = config.get("brand_visuals.colors.accent")
+    _check(
+        "18. Color token — brand_visuals.colors.accent == '#E0A82E'",
+        accent == "#E0A82E",
+        f"got {accent!r}",
+    )
+
+    primary = config.get("brand_visuals.colors.primary")
+    _check(
+        "19. Color token — brand_visuals.colors.primary == '#1A1A1A'",
+        primary == "#1A1A1A",
+        f"got {primary!r}",
+    )
+
+    color_roles = [
+        "primary", "primary_light", "secondary",
+        "accent", "neutral_light", "neutral_dark",
+    ]
+    colors = config.get("brand_visuals.colors")
+    missing_or_empty = [
+        role for role in color_roles
+        if not isinstance(colors.get(role) if isinstance(colors, dict) else None, str)
+        or not (colors.get(role) or "").strip()
+    ]
+    _check(
+        "20. Color tokens — all six role keys present and non-empty",
+        isinstance(colors, dict) and not missing_or_empty,
+        f"missing/empty: {missing_or_empty}"
+        if isinstance(colors, dict)
+        else f"colors is {type(colors).__name__}, not a dict",
+    )
+
+    # Regression guard: the nested colors addition must NOT displace the
+    # pre-existing brand_visuals keys (logo overlay config for a future version).
+    preexisting = {
+        "logo_file_id": config.get("brand_visuals.logo_file_id", default=None),
+        "logo_position": config.get("brand_visuals.logo_position", default=None),
+        "logo_size_fraction": config.get(
+            "brand_visuals.logo_size_fraction", default=None
+        ),
+    }
+    missing_preexisting = [k for k, v in preexisting.items() if v in (None, "")]
+    _check(
+        "21. Regression — pre-existing brand_visuals keys (logo_file_id, "
+        "logo_position, logo_size_fraction) still present",
+        not missing_preexisting,
+        f"missing/empty: {missing_preexisting} (values={preexisting!r})",
+    )
+
     total = _PASSED + len(_FAILURES)
     print()
     print(f"Results: {_PASSED}/{total} passed")
