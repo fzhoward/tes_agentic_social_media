@@ -2641,6 +2641,454 @@ def test_drafter_dry_run(config) -> None:  # type: ignore[no-untyped-def]
     )
 
 
+# ----------------------------------------------------------------------
+# Infographic media branch tests (generate_media / _generate_infographic_media
+# / _build_infographic_prompt). The Gemini tool is ALWAYS mocked — no real
+# generate_infographic call is ever made.
+# ----------------------------------------------------------------------
+
+def _infographic_config() -> Config:
+    """Config carrying the brand_visuals.colors block the prompt builder reads."""
+    return Config({
+        "brand_visuals": {
+            "colors": {
+                "primary": "#1A1A1A",
+                "primary_light": "#FFFFFF",
+                "secondary": "#3A4A55",
+                "accent": "#E0A82E",
+                "neutral_light": "#F2F3F4",
+                "neutral_dark": "#70777E",
+            },
+        },
+    })
+
+
+def test_generate_media_routes_image2_generated_to_infographic() -> None:
+    """A row with media_format='image2_generated' and NO source image routes to
+    the infographic branch and returns the tool's success result."""
+    captured: dict = {}
+
+    def fake_generate_infographic(prompt, output_path):
+        captured["prompt"] = prompt
+        captured["output_path"] = output_path
+        # Tool corrects extension to native JPEG and returns the real path.
+        return {
+            "success": True,
+            "output_path": output_path + ".jpg",
+            "error": "",
+        }
+
+    row = {
+        drafter.CQ_ROW_ID: "TEST-INFO-01",
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_MEDIA_FORMAT: "image2_generated",
+        drafter.CQ_CONTENT_TYPE: "Educational Tip",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+        drafter.CQ_ANGLE: "How to pick the right machine for soft ground.",
+    }
+
+    orig = drafter.infographic_generator.generate_infographic
+    drafter.infographic_generator.generate_infographic = fake_generate_infographic
+    try:
+        result = drafter.generate_media(
+            row=row,
+            image_id="",
+            overlay_hook="",
+            caption_hook="",
+            image_prompt_universal="",
+            image_prompt_social="",
+            config=_infographic_config(),
+            drive_service=None,
+            review_data=None,
+            creative_hook_text="Match the machine",
+        )
+    finally:
+        drafter.infographic_generator.generate_infographic = orig
+
+    _check(
+        "64. generate_media — image2_generated routes to infographic branch "
+        "and returns success with the tool's returned path",
+        result.get("success") is True
+        and result.get("media_format_used") == "image2_generated"
+        and result.get("output_path") == captured.get("output_path", "") + ".jpg"
+        and result.get("fallback_chain") == [],
+        f"result={result!r}, captured_path={captured.get('output_path')!r}",
+    )
+
+
+def test_generate_media_infographic_above_image_id_guard() -> None:
+    """The infographic branch sits ABOVE the `if not image_id` guard: an empty
+    image_id with media_format='image2_generated' yields the infographic
+    success, NOT the 'no source image available' failure."""
+    def fake_generate_infographic(prompt, output_path):
+        return {"success": True, "output_path": "/tmp/x_infographic.jpg",
+                "error": ""}
+
+    row = {
+        drafter.CQ_ROW_ID: "TEST-INFO-02",
+        drafter.CQ_PLATFORM: "instagram",
+        drafter.CQ_MEDIA_FORMAT: "image2_generated",
+        drafter.CQ_CONTENT_TYPE: "Local Connection",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+
+    orig = drafter.infographic_generator.generate_infographic
+    drafter.infographic_generator.generate_infographic = fake_generate_infographic
+    try:
+        result = drafter.generate_media(
+            row=row,
+            image_id="",
+            overlay_hook="",
+            caption_hook="",
+            image_prompt_universal="",
+            image_prompt_social="",
+            config=_infographic_config(),
+            drive_service=None,
+            review_data=None,
+            creative_hook_text="Rain is coming",
+        )
+    finally:
+        drafter.infographic_generator.generate_infographic = orig
+
+    _check(
+        "65. generate_media — infographic branch sits above the image_id guard "
+        "(empty image_id does NOT hit 'no source image available')",
+        result.get("success") is True
+        and result.get("media_format_used") == "image2_generated"
+        and result.get("error") == ""
+        and "no source image available" not in str(result.get("fallback_chain")),
+        f"result={result!r}",
+    )
+
+
+def test_generate_media_review_still_routes_to_review() -> None:
+    """Regression: a REVIEW_MEDIA_FORMATS row still routes to review media —
+    the infographic branch did not displace the review bypass, and the
+    infographic tool is never called."""
+    info_calls: list[str] = []
+
+    def fake_generate_infographic(prompt, output_path):
+        info_calls.append(output_path)
+        return {"success": True, "output_path": output_path, "error": ""}
+
+    def fake_render(template_id, modifications, output_path, **kwargs):
+        return {"success": True, "output_path": output_path,
+                "render_id": "ok", "error": ""}
+
+    config = Config({
+        "creatomate": {
+            "review_image": {"templates": {"bold_quote_card": {"id": "img"}}},
+        },
+    })
+    review = {"review_id": "x", "reviewer_first_name": "Y", "excerpt_long": "Z"}
+
+    orig_info = drafter.infographic_generator.generate_infographic
+    orig_render = creatomate_helpers.render_template
+    drafter.infographic_generator.generate_infographic = fake_generate_infographic
+    creatomate_helpers.render_template = fake_render
+    try:
+        result = drafter.generate_media(
+            row={drafter.CQ_ROW_ID: "TEST-INFO-03"},
+            image_id="",
+            overlay_hook="",
+            caption_hook="",
+            image_prompt_universal="",
+            image_prompt_social="",
+            config=config,
+            drive_service=None,
+            review_data=review,
+            creative_hook_text="",
+            review_excerpt="Z",
+        )
+        # media_format on the row drives review routing.
+        result_review = drafter.generate_media(
+            row={drafter.CQ_ROW_ID: "TEST-INFO-03",
+                 drafter.CQ_MEDIA_FORMAT: "creatomate_review_image"},
+            image_id="",
+            overlay_hook="",
+            caption_hook="",
+            image_prompt_universal="",
+            image_prompt_social="",
+            config=config,
+            drive_service=None,
+            review_data=review,
+            creative_hook_text="",
+            review_excerpt="Z",
+        )
+    finally:
+        drafter.infographic_generator.generate_infographic = orig_info
+        creatomate_helpers.render_template = orig_render
+
+    _check(
+        "66. generate_media — review format still routes to review media "
+        "(infographic branch did not displace the review bypass)",
+        result_review.get("success") is True
+        and result_review.get("media_format_used") == "creatomate_review_image"
+        and info_calls == [],
+        f"result_review={result_review!r}, info_calls={info_calls!r}",
+    )
+
+
+def test_generate_media_equipment_still_routes_to_image2() -> None:
+    """Regression: a normal equipment row (image2_enhanced, with image_id) still
+    routes to the existing image2 path; the infographic tool is never called."""
+    info_calls: list[str] = []
+
+    def fake_generate_infographic(prompt, output_path):
+        info_calls.append(output_path)
+        return {"success": True, "output_path": output_path, "error": ""}
+
+    def fake_download(image_id, out, service=None, **kwargs):
+        return out
+
+    def fake_generate_image(src_local, prompt, output_path, **kwargs):
+        return {"success": True, "output_path": output_path, "error": ""}
+
+    row = {
+        drafter.CQ_ROW_ID: "TEST-INFO-04",
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_MEDIA_FORMAT: "image2_enhanced",
+        drafter.CQ_CONTENT_TYPE: "Equipment Spotlight / Product Feature",
+        drafter.CQ_TEXT_OVERLAY: "FALSE",
+    }
+
+    orig_info = drafter.infographic_generator.generate_infographic
+    orig_dl = drafter.drive_helpers.download_file
+    orig_img = drafter.image_generator.generate_image
+    drafter.infographic_generator.generate_infographic = fake_generate_infographic
+    drafter.drive_helpers.download_file = fake_download
+    drafter.image_generator.generate_image = fake_generate_image
+    try:
+        result = drafter.generate_media(
+            row=row,
+            image_id="drive-image-id",
+            overlay_hook="",
+            caption_hook="A hook line.",
+            image_prompt_universal="(universal)",
+            image_prompt_social="(social)",
+            config=Config({}),
+            drive_service=None,
+            review_data=None,
+            creative_hook_text="",
+        )
+    finally:
+        drafter.infographic_generator.generate_infographic = orig_info
+        drafter.drive_helpers.download_file = orig_dl
+        drafter.image_generator.generate_image = orig_img
+
+    _check(
+        "67. generate_media — normal equipment row still routes to the image2 "
+        "path (infographic tool never called)",
+        result.get("success") is True
+        and result.get("media_format_used") == "image2_enhanced"
+        and info_calls == [],
+        f"result={result!r}, info_calls={info_calls!r}",
+    )
+
+
+def test_generate_media_infographic_tool_failure() -> None:
+    """Tool failure: generate_infographic returns success=False → generate_media
+    returns success False with a fallback_chain entry and never raises."""
+    def fake_generate_infographic(prompt, output_path):
+        return {"success": False, "output_path": "",
+                "error": "Gemini model access denied"}
+
+    row = {
+        drafter.CQ_ROW_ID: "TEST-INFO-05",
+        drafter.CQ_PLATFORM: "facebook",
+        drafter.CQ_MEDIA_FORMAT: "image2_generated",
+        drafter.CQ_CONTENT_TYPE: "Educational Tip",
+        drafter.CQ_FOCUS_EQUIPMENT: "",
+    }
+
+    orig = drafter.infographic_generator.generate_infographic
+    drafter.infographic_generator.generate_infographic = fake_generate_infographic
+    raised = False
+    try:
+        try:
+            result = drafter.generate_media(
+                row=row,
+                image_id="",
+                overlay_hook="",
+                caption_hook="",
+                image_prompt_universal="",
+                image_prompt_social="",
+                config=_infographic_config(),
+                drive_service=None,
+                review_data=None,
+                creative_hook_text="Match the machine",
+            )
+        except Exception:
+            raised = True
+            result = {}
+    finally:
+        drafter.infographic_generator.generate_infographic = orig
+
+    chain = result.get("fallback_chain", [])
+    _check(
+        "68. generate_media — infographic tool failure returns success False "
+        "with fallback_chain entry and does not raise",
+        raised is False
+        and result.get("success") is False
+        and result.get("media_format_used") == ""
+        and len(chain) == 1
+        and chain[0][0] == "image2_generated"
+        and "access denied" in chain[0][1]
+        and "access denied" in result.get("error", ""),
+        f"raised={raised}, result={result!r}",
+    )
+
+
+def test_build_infographic_prompt_style_blocks_differ() -> None:
+    """Educational Tip → diagrammatic/process language; Local Connection →
+    thematic/environmental (dry-vs-wet) language; the two prompts differ."""
+    config = _infographic_config()
+    edu = drafter._build_infographic_prompt(
+        content_type="Educational Tip",
+        creative_hook_text="Match the machine",
+        caption_concept="Pick the right machine for soft ground.",
+        config=config,
+    )
+    local = drafter._build_infographic_prompt(
+        content_type="Local Connection",
+        creative_hook_text="Rain is coming",
+        caption_concept="Wet season is starting in the area.",
+        config=config,
+    )
+    edu_l = edu.lower()
+    local_l = local.lower()
+    _check(
+        "69. _build_infographic_prompt — Educational Tip uses diagrammatic/"
+        "process language; Local Connection uses thematic/environmental "
+        "(dry-vs-wet) language; they differ",
+        ("diagrammatic" in edu_l and "process" in edu_l)
+        and ("thematic" in local_l or "environmental" in local_l)
+        and ("dry" in local_l and "wet" in local_l)
+        and edu != local,
+        f"edu_diagrammatic={'diagrammatic' in edu_l}, "
+        f"local_thematic={'thematic' in local_l or 'environmental' in local_l}, "
+        f"local_dry_wet={'dry' in local_l and 'wet' in local_l}, "
+        f"differ={edu != local}",
+    )
+
+
+def test_build_infographic_prompt_unknown_content_type_fallback() -> None:
+    """Unknown content_type falls back to the diagrammatic block (no crash)."""
+    config = _infographic_config()
+    raised = False
+    prompt = ""
+    try:
+        prompt = drafter._build_infographic_prompt(
+            content_type="Some Brand New Type",
+            creative_hook_text="Generic headline",
+            caption_concept="Some concept.",
+            config=config,
+        )
+    except Exception:
+        raised = True
+    _check(
+        "70. _build_infographic_prompt — unknown content_type falls back to "
+        "the diagrammatic block without crashing",
+        raised is False and "diagrammatic" in prompt.lower(),
+        f"raised={raised}, has_diagrammatic="
+        f"{'diagrammatic' in prompt.lower()}",
+    )
+
+
+def test_build_infographic_prompt_headline_verbatim() -> None:
+    """The creative_hook_text appears verbatim and the builder instructs the
+    rendered headline to read EXACTLY that string."""
+    config = _infographic_config()
+    headline = "Zero swing changes the game"
+    prompt = drafter._build_infographic_prompt(
+        content_type="Educational Tip",
+        creative_hook_text=headline,
+        caption_concept="Tight lots need a zero-swing machine.",
+        config=config,
+    )
+    _check(
+        "71. _build_infographic_prompt — creative_hook_text embedded verbatim "
+        "with an EXACT-headline instruction",
+        headline in prompt and "exactly" in prompt.lower(),
+        f"headline_present={headline in prompt}, "
+        f"has_exactly={'exactly' in prompt.lower()}",
+    )
+
+
+def test_build_infographic_prompt_brand_colors_from_config() -> None:
+    """Brand color hexes are pulled from config and appear in the prompt."""
+    config = _infographic_config()
+    prompt = drafter._build_infographic_prompt(
+        content_type="Educational Tip",
+        creative_hook_text="Match the machine",
+        caption_concept="Concept.",
+        config=config,
+    )
+    _check(
+        "72. _build_infographic_prompt — accent (#E0A82E) and primary (#1A1A1A) "
+        "hexes from config appear in the prompt",
+        "#E0A82E" in prompt and "#1A1A1A" in prompt,
+        f"accent_present={'#E0A82E' in prompt}, "
+        f"primary_present={'#1A1A1A' in prompt}",
+    )
+
+
+def test_build_infographic_prompt_hard_negatives_and_whitelist() -> None:
+    """The prompt forbids logos/wordmarks/URLs and photorealism, and states the
+    text whitelist (headline + at most 2 short labels)."""
+    config = _infographic_config()
+    prompt = drafter._build_infographic_prompt(
+        content_type="Educational Tip",
+        creative_hook_text="Match the machine",
+        caption_concept="Concept.",
+        config=config,
+    )
+    p = prompt.lower()
+    _check(
+        "73. _build_infographic_prompt — hard negatives (logos/wordmarks/URLs, "
+        "no photorealism) and text whitelist (headline + ≤2 labels) present",
+        "logo" in p
+        and "wordmark" in p
+        and "url" in p
+        and "photorealism" in p
+        and "whitelist" in p
+        and "2" in prompt,
+        f"logo={'logo' in p}, wordmark={'wordmark' in p}, url={'url' in p}, "
+        f"photorealism={'photorealism' in p}, whitelist={'whitelist' in p}",
+    )
+
+
+def test_build_infographic_prompt_caption_is_concept_not_lettered() -> None:
+    """A county name / URL in the caption is used as CONCEPT input, but the
+    builder carries the explicit constraint that county names / URLs are never
+    lettered into the image."""
+    config = _infographic_config()
+    concept = (
+        "Serving Bradford County contractors — book at https://tesrents.com "
+        "before the wet season."
+    )
+    prompt = drafter._build_infographic_prompt(
+        content_type="Local Connection",
+        creative_hook_text="Beat the wet season",
+        caption_concept=concept,
+        config=config,
+    )
+    p = prompt.lower()
+    # Robust: assert the explicit "never letter county names / URL" constraint
+    # exists rather than trying to prove a negative across the whole string.
+    has_constraint = (
+        "county" in p
+        and "concept input only" in p
+        and ("never be lettered" in p or "never lettered" in p)
+    )
+    _check(
+        "74. _build_infographic_prompt — caption county/URL is concept input "
+        "only, with an explicit never-letter-into-image constraint",
+        has_constraint and "concept" in p,
+        f"has_constraint={has_constraint}, has_concept={'concept' in p}",
+    )
+
+
 if pytest is not None:
     # Live Anthropic-API integration test; costs money. Skip under pytest so it
     # is never collected/run there. The native runner calls it directly with a
@@ -2725,6 +3173,17 @@ def run_tests(run_live: bool) -> int:
     test_status_gate_allows_drafted_on_revision()
     test_status_gate_rejects_drafted_round1()
     test_cli_revision_requires_previous_output()
+    test_generate_media_routes_image2_generated_to_infographic()
+    test_generate_media_infographic_above_image_id_guard()
+    test_generate_media_review_still_routes_to_review()
+    test_generate_media_equipment_still_routes_to_image2()
+    test_generate_media_infographic_tool_failure()
+    test_build_infographic_prompt_style_blocks_differ()
+    test_build_infographic_prompt_unknown_content_type_fallback()
+    test_build_infographic_prompt_headline_verbatim()
+    test_build_infographic_prompt_brand_colors_from_config()
+    test_build_infographic_prompt_hard_negatives_and_whitelist()
+    test_build_infographic_prompt_caption_is_concept_not_lettered()
 
     if run_live:
         print()
