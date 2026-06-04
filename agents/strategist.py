@@ -61,6 +61,21 @@ MEDIA_FORMATS: list[str] = [
     "creatomate_video",
     "creatomate_review_image",
     "creatomate_review_video",
+    # Deterministic-only terminal target — the AI-generated infographic path for
+    # no-focus-equipment rows (no source image required). The LLM never picks
+    # this (see LLM_SELECTABLE_MEDIA_FORMATS); it is assigned by
+    # enforce_equipment_format_requires_focus. Must be a VALID format so the
+    # validator accepts it, but must stay OUT of EQUIPMENT_MEDIA_FORMATS (it is
+    # the reassignment target, not a thing to be reassigned).
+    "image2_generated",
+]
+
+# Media formats offered to the LLM in the planning prompt. This EXCLUDES
+# image2_generated — that format is a deterministic reassignment target only and
+# must never appear in the menu the Strategist chooses from. Validation uses the
+# full MEDIA_FORMATS set; the offered menu uses this subset.
+LLM_SELECTABLE_MEDIA_FORMATS: list[str] = [
+    f for f in MEDIA_FORMATS if f != "image2_generated"
 ]
 
 TEXT_OVERLAY_FORMATS: set[str] = {"image2_text_overlay", "creatomate_text_overlay"}
@@ -82,8 +97,10 @@ EQUIPMENT_MEDIA_FORMATS: set[str] = {
 DEFAULT_REVIEW_MEDIA_FORMAT: str = "creatomate_review_image"
 
 # Equipment-side default used when the LLM assigns a review media format to a
-# non–Social Proof post.
-DEFAULT_EQUIPMENT_MEDIA_FORMAT: str = "image2_enhanced"
+# non–Social Proof post, and the replacement target for no-focus equipment-format
+# rows. Routes to the AI-generated infographic path (no source image required)
+# instead of the media-less image2_enhanced dead-end.
+DEFAULT_EQUIPMENT_MEDIA_FORMAT: str = "image2_generated"
 
 SOCIAL_PROOF_CONTENT_TYPE: str = "Social Proof / Customer Story"
 
@@ -648,7 +665,7 @@ def assemble_prompt(
         "Generic framing (use cases, job context, seasonal relevance) does not "
         "require catalog grounding — only specific product attribute claims do.\n"
         "  cta_type: one of " + cta_lines + "\n"
-        "  media_format: one of " + ", ".join(MEDIA_FORMATS) + "\n"
+        "  media_format: one of " + ", ".join(LLM_SELECTABLE_MEDIA_FORMATS) + "\n"
         "  review_id: REQUIRED (non-empty) for Social Proof / Customer Story posts — "
         "must be a review_id from the eligible reviews list below. EMPTY string for "
         "every other content type. Never invent a review_id.\n"
@@ -1047,7 +1064,8 @@ def enforce_equipment_format_requires_focus(
     creatomate_text_overlay, creatomate_video) needs a source equipment
     photo, so none of them can run on a post without focus_equipment_id.
     When the LLM produces such a row, we rewrite media_format in place to
-    ``replacement_format`` (default image2_enhanced) and emit a warning.
+    ``replacement_format`` (default image2_generated — the AI-generated
+    infographic path, which needs no source image) and emit a warning.
 
     This subsumes the old enforce_video_requires_equipment rule, which
     only caught creatomate_video — owners observed image2_text_overlay
