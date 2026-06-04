@@ -39,6 +39,7 @@ from tools import (
     drive_helpers,
     image_generator,
     image_selector,
+    infographic_generator,
     sheets_helpers,
     skill_loader,
 )
@@ -145,6 +146,11 @@ VIDEO_MEDIA_FORMATS: set[str] = {"creatomate_video", "creatomate_review_video"}
 
 # Media formats rendered from a Reviews-Sheet row rather than an equipment photo.
 REVIEW_MEDIA_FORMATS: set[str] = {"creatomate_review_image", "creatomate_review_video"}
+
+# Media format generated as a text-to-image infographic (no source equipment
+# photo). Routed to tools/infographic_generator.py (Gemini "Nano Banana 2").
+# Consumed by no-focus-equipment rows (Educational Tip, Local Connection).
+INFOGRAPHIC_MEDIA_FORMAT: str = "image2_generated"
 
 # Content type that pairs with review media formats.
 SOCIAL_PROOF_CONTENT_TYPE: str = "Social Proof / Customer Story"
@@ -1776,6 +1782,153 @@ def _ensure_tmp() -> None:
     os.makedirs(TMP_DIR, exist_ok=True)
 
 
+def _build_infographic_prompt(
+    content_type: str,
+    creative_hook_text: str,
+    caption_concept: str,
+    config: Config,
+) -> str:
+    """Assemble the text-to-image infographic prompt (templated, no LLM call).
+
+    The prompt = shared invariants + a per-content_type style block + an
+    explicit instruction that the rendered headline must read EXACTLY
+    `creative_hook_text`. Brand colors are pulled from
+    config.get("brand_visuals.colors.<role>") and named in plain English
+    alongside their hex as a palette NUDGE (not a pixel-exact spec).
+    """
+    headline = (creative_hook_text or "").strip()
+    concept = (caption_concept or "").strip() or "the post's intent"
+
+    # Brand palette — named in plain English alongside hex (a nudge, not exact).
+    primary = config.get("brand_visuals.colors.primary", "") or ""
+    secondary = config.get("brand_visuals.colors.secondary", "") or ""
+    accent = config.get("brand_visuals.colors.accent", "") or ""
+    neutral_light = config.get("brand_visuals.colors.neutral_light", "") or ""
+    primary_light = config.get("brand_visuals.colors.primary_light", "") or ""
+    neutral_dark = config.get("brand_visuals.colors.neutral_dark", "") or ""
+
+    # --- SHARED INVARIANTS (identical across style blocks) ---
+    shared = (
+        "Create a polished flat-vector infographic illustration, 1024x1024, "
+        "square; illustrated editorial style; full creative freedom over "
+        "layout.\n\n"
+        "CONCEPT (derive the visual idea FROM this — it describes the post's "
+        "intent and must NEVER be transcribed verbatim into the image): "
+        f"{concept}\n\n"
+        "BRAND PALETTE (a nudge toward these colors, not a pixel-exact spec): "
+        f"primary near-black {primary} for the headline and anchor elements; "
+        f"secondary steel charcoal {secondary} for panels and secondary "
+        f"elements; accent amber {accent} USED SPARINGLY (~10% max) for key "
+        f"emphasis; neutral_light {neutral_light} for quiet fills; "
+        f"primary_light white {primary_light} for backgrounds and negative "
+        f"space; neutral_dark {neutral_dark} for small, quiet details.\n\n"
+        "ILLUSTRATED ELEMENTS ALLOWED: flat-vector equipment, ground, water, "
+        "weather, terrain, and simplified people or hands are all allowed in "
+        "this illustrated style.\n\n"
+        "HARD NEGATIVES: no company logos, wordmarks, brand names, or website "
+        "URLs; no fabricated brand identity of any kind; no photorealism; no "
+        "equipment specs stated as fact (no model numbers, no horsepower, "
+        "weight, or dig-depth figures). Generic illustrative scale cues (dry "
+        "vs wet, shallow vs deep) are fine as long as they are NOT labeled as "
+        "real specs.\n\n"
+        "TEXT WHITELIST (hard constraint): the headline ONLY, plus AT MOST 2 "
+        "short generic labels (≤2 words each). No sentences, no place "
+        "names, no personal names, no web address, no paragraphs. Any county "
+        "names or URL implied by the concept are CONCEPT INPUT ONLY and must "
+        "NEVER be lettered into the image (highest garble risk)."
+    )
+
+    # --- PER-CONTENT_TYPE STYLE BLOCK (deterministic switch) ---
+    diagrammatic_block = (
+        "STYLE — DIAGRAMMATIC / PROCESS: express the idea as a diagrammatic "
+        "process — steps, arrows, or a numbered/sequential layout — "
+        "emphasizing clarity of the sequence. You MAY add up to 2 very short "
+        "generic labels (≤2 words each) only if they strengthen the "
+        "diagram."
+    )
+    thematic_block = (
+        "STYLE — THEMATIC / ENVIRONMENTAL: express the seasonal/local-condition "
+        "idea as a thematic environmental scene — a composition contrasting a "
+        "dry/firm condition against incoming rain/wet/saturated ground, with a "
+        "piece of illustrated equipment shown in that context. Emphasize mood, "
+        "timing, and condition over technical detail. You MAY add up to 2 very "
+        "short generic labels (≤2 words each, e.g. \"Dry\"/\"Wet\" or "
+        "\"Firm\"/\"Soft\") only if they strengthen the composition."
+    )
+
+    ct = (content_type or "").strip()
+    if ct == "Local Connection":
+        style_block = thematic_block
+    else:
+        # "Educational Tip" and the DEFAULT FALLBACK (any other content_type)
+        # both use the safer diagrammatic block. Per design, no other content
+        # type routinely runs this path — the fallback is a safety net only.
+        style_block = diagrammatic_block
+
+    headline_instruction = (
+        "The rendered headline text must read EXACTLY — character for "
+        f"character — \"{headline}\" — and nothing else, except the "
+        "optional ≤2 generic labels permitted by the chosen style and the "
+        "text whitelist."
+    )
+
+    return f"{shared}\n\n{style_block}\n\n{headline_instruction}"
+
+
+def _generate_infographic_media(
+    row: dict,
+    creative_hook_text: str,
+    config: Config,
+) -> dict:
+    """Generate an infographic (text-to-image, no source photo) for `row`.
+
+    Returns the standard generate_media result dict so the output flows through
+    the existing upload_media_to_drive + socialbu_publish path unchanged. Never
+    raises — the underlying tool never raises, and nothing here introduces one.
+    """
+    row_id = str(row.get(CQ_ROW_ID, "")).strip() or "unknown"
+    content_type = str(row.get(CQ_CONTENT_TYPE, "")).strip()
+
+    # Caption / angle / draft_notes are CONCEPT INPUT — they shape the visual
+    # idea but are never transcribed verbatim into the image.
+    concept_parts = [
+        str(row.get(CQ_CAPTION, "")).strip(),
+        str(row.get(CQ_ANGLE, "")).strip(),
+        str(row.get(CQ_DRAFT_NOTES, "")).strip(),
+    ]
+    caption_concept = " ".join(part for part in concept_parts if part)
+
+    prompt = _build_infographic_prompt(
+        content_type=content_type,
+        creative_hook_text=creative_hook_text,
+        caption_concept=caption_concept,
+        config=config,
+    )
+
+    # No extension — the tool corrects the extension to the native mime type
+    # and returns the real path it actually wrote.
+    output_path = os.path.join(TMP_DIR, f"{row_id}_infographic")
+    res = infographic_generator.generate_infographic(prompt, output_path)
+
+    if res.get("success"):
+        return {
+            "success": True,
+            "output_path": res["output_path"],
+            "media_format_used": INFOGRAPHIC_MEDIA_FORMAT,
+            "fallback_chain": [],
+            "error": "",
+        }
+
+    tool_error = res.get("error", "infographic generation failed")
+    return {
+        "success": False,
+        "output_path": "",
+        "media_format_used": "",
+        "fallback_chain": [(INFOGRAPHIC_MEDIA_FORMAT, tool_error)],
+        "error": tool_error,
+    }
+
+
 def generate_media(
     row: dict,
     image_id: str,
@@ -1816,6 +1969,16 @@ def generate_media(
             image_id=image_id,
             config=config,
             excerpt=review_excerpt or None,
+        )
+
+    # Infographic media has its own pipeline — a pure text-to-image generation
+    # with NO source equipment photo. It must sit ABOVE the `if not image_id`
+    # guard (like the review bypass) because these rows carry no source image.
+    if media_format == INFOGRAPHIC_MEDIA_FORMAT:
+        return _generate_infographic_media(
+            row=row,
+            creative_hook_text=creative_hook_text,
+            config=config,
         )
 
     fallback_chain: list[tuple[str, str]] = []
