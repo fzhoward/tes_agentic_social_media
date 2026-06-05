@@ -17,6 +17,9 @@ Endpoints:
     POST /run/approval-card             Make Scenario 5 — bearer auth
     POST /run/approval-card-reschedule  Make Scenario 7 — bearer auth
     POST /slack/interactivity           Slack Scenario 6 — Slack signature auth
+    GET  /media/<row_id>/<token>        serves a row's generated media bytes —
+                                        HMAC-token auth (NOT bearer; Slack
+                                        fetches the image URL unauthenticated)
 
 Auth:
     - Make endpoints (/run/*) require  Authorization: Bearer <EXECUTOR_TOKEN>.
@@ -35,6 +38,8 @@ Auth:
 Environment (loaded from .env via python-dotenv):
     EXECUTOR_TOKEN         shared secret for the Make-triggered endpoints
     SLACK_SIGNING_SECRET   for verifying Slack interactivity requests
+    MEDIA_URL_SECRET       HMAC secret for the signed /media/<row_id>/<token>
+                           URLs the approval card embeds
     BUSINESS_CONFIG_PATH   optional; defaults to business_config_tes_rentals.yaml
 
 Run (production):
@@ -54,7 +59,7 @@ import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, abort, jsonify, request
 
 
 load_dotenv(override=False)
@@ -172,6 +177,86 @@ def _verify_slack_signature(raw_body: bytes) -> bool:
         ).hexdigest()
     )
     return hmac.compare_digest(computed, slack_sig)
+
+
+# Image extensions the drafter writes to .tmp (e.g. _infographic.jpg,
+# _generated.png, _rendered.png, _review.png) and their content types.
+_MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png")
+_MIME_BY_EXT = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+
+
+def _sign_media_token(row_id: str) -> str:
+    """HMAC-SHA256 of row_id under MEDIA_URL_SECRET, hex, truncated to 32 chars.
+
+    The approval-card builder computes the identical token to construct the
+    public image URL. Shared secret lives in .env as MEDIA_URL_SECRET. When the
+    secret is unset the route refuses to serve (see serve_media), so this never
+    authorizes a request under an empty secret.
+    """
+    secret = os.environ.get("MEDIA_URL_SECRET", "")
+    return hmac.new(secret.encode(), row_id.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _media_config_path() -> str:
+    """Absolute path to the business config, resolved against the repo root.
+
+    CONFIG_PATH may be a bare filename; gunicorn's cwd is not guaranteed to be
+    the repo root, so anchor relative paths to REPO_ROOT.
+    """
+    p = Path(CONFIG_PATH)
+    return str(p if p.is_absolute() else REPO_ROOT / p)
+
+
+def _resolve_tab_name(sheet_id: str, service) -> str:
+    """First sheet's title — mirrors approval_card.py::_resolve_tab_name."""
+    meta = service.spreadsheets().get(
+        spreadsheetId=sheet_id,
+        fields="sheets(properties(title))",
+    ).execute()
+    return meta["sheets"][0]["properties"]["title"]
+
+
+def _drive_media_bytes(file_id: str) -> tuple[bytes, str]:
+    """Download a Drive file's bytes into memory (no disk write).
+
+    Returns (raw_bytes, mime_type). Raises on any Drive/HTTP error so the
+    caller can fall back to the local .tmp copy.
+    """
+    from io import BytesIO
+
+    from googleapiclient.http import MediaIoBaseDownload
+
+    from tools import drive_helpers
+
+    service = drive_helpers.get_drive_service()
+    mime = (
+        service.files()
+        .get(fileId=file_id, fields="mimeType")
+        .execute()
+        .get("mimeType")
+        or ""
+    )
+    buffer = BytesIO()
+    downloader = MediaIoBaseDownload(
+        buffer, service.files().get_media(fileId=file_id)
+    )
+    done = False
+    while not done:
+        _status, done = downloader.next_chunk()
+    return buffer.getvalue(), mime
+
+
+def _local_media_file(row_id: str):
+    """First .tmp image whose name starts with ``{row_id}_``, or None."""
+    tmp_dir = REPO_ROOT / ".tmp"
+    try:
+        candidates = sorted(tmp_dir.glob(f"{row_id}_*"))
+    except OSError:
+        return None
+    for path in candidates:
+        if path.suffix.lower() in _MEDIA_EXTENSIONS and path.is_file():
+            return path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +377,74 @@ def slack_interactivity() -> Response:
         target=_dispatch_router, args=(payload_str,), daemon=True
     ).start()
     return ("", 200)
+
+
+@app.get("/media/<row_id>/<token>")
+def serve_media(row_id: str, token: str) -> Response:
+    # DELIBERATE EXCEPTION to this service's "dumb runner, shells out via
+    # _run_cli" principle: serving a static media file is a delivery concern,
+    # not pipeline logic, and it must return raw image bytes rather than JSON —
+    # so it imports sheets_helpers/drive_helpers directly instead of shelling
+    # out. Slack fetches image URLs server-side and UNAUTHENTICATED (no headers
+    # we control), so this route MUST NOT use _check_bearer(); it is guarded by
+    # the HMAC token in the path instead.
+    secret = os.environ.get("MEDIA_URL_SECRET", "")
+    if not secret:
+        # No secret configured — every token is forgeable, so serve nothing.
+        abort(403)
+    expected = _sign_media_token(row_id)
+    if not hmac.compare_digest(token, expected):
+        abort(403)
+
+    # Resolve the row from the Content Queue. Any failure here is a clean 404 —
+    # never a 500 stacktrace to the caller.
+    try:
+        from tools import sheets_helpers
+        from tools.config_loader import load_config
+
+        config = load_config(_media_config_path())
+        sheet_id = config.get("drive.content_queue_sheet_id")
+        service = sheets_helpers.get_sheets_service()
+        tab_name = _resolve_tab_name(sheet_id, service)
+        matches = sheets_helpers.find_rows_by_column_value(
+            sheet_id, tab_name, "row_id", row_id, service=service,
+        )
+    except Exception:
+        abort(404)
+
+    if not matches:
+        abort(404)
+    _row_number, row = matches[0]
+
+    # media_url holds a Drive file ID (not a URL), written by the drafter.
+    file_id = (row.get("media_url") or "").strip()
+
+    body: bytes | None = None
+    mime: str | None = None
+
+    # Drive first.
+    if file_id:
+        try:
+            body, mime = _drive_media_bytes(file_id)
+        except Exception:
+            body = None
+
+    # .tmp fallback — used when media_url is empty or the Drive fetch failed.
+    if body is None:
+        local = _local_media_file(row_id)
+        if local is not None:
+            try:
+                body = local.read_bytes()
+                mime = _MIME_BY_EXT.get(local.suffix.lower())
+            except OSError:
+                body = None
+
+    if body is None:
+        abort(404)
+
+    if not mime or not mime.startswith("image/"):
+        mime = "image/jpeg"
+    return Response(body, mimetype=mime)
 
 
 if __name__ == "__main__":
