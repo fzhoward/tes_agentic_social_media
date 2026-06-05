@@ -17,9 +17,16 @@ Endpoints:
     POST /run/approval-card             Make Scenario 5 — bearer auth
     POST /run/approval-card-reschedule  Make Scenario 7 — bearer auth
     POST /slack/interactivity           Slack Scenario 6 — Slack signature auth
+    POST /slack/events                  Slack Events API — edited-caption
+                                        capture — Slack signature auth
     GET  /media/<row_id>/<token>        serves a row's generated media bytes —
                                         HMAC-token auth (NOT bearer; Slack
                                         fetches the image URL unauthenticated)
+
+    /slack/events reads a JSON body (not a urlencoded form like
+    /slack/interactivity) and answers Slack's one-time url_verification
+    challenge synchronously; threaded replies map to a Content Queue row via
+    thread_ts == slack_message_ts and shell out to the router's --edit-commit.
 
 Auth:
     - Make endpoints (/run/*) require  Authorization: Bearer <EXECUTOR_TOKEN>.
@@ -376,6 +383,127 @@ def slack_interactivity() -> Response:
     threading.Thread(
         target=_dispatch_router, args=(payload_str,), daemon=True
     ).start()
+    return ("", 200)
+
+
+def _dispatch_event(event: dict) -> None:
+    """Background worker: capture an edited-caption reply and commit it.
+
+    Maps a threaded Slack message back to its Content Queue row via
+    thread_ts == slack_message_ts (persisted in Piece 1) and, when that row is
+    still at status ``drafted`` (the edit-caption state set by the router),
+    shells out to ``tools.approval_router --edit-commit`` to write the revised
+    caption and publish. NEVER raises — this runs in a daemon thread, so every
+    failure path logs one stderr line and returns.
+    """
+    # --- Guards: only genuine threaded human replies map to a card. ---------
+    if event.get("type") != "message":
+        print(f"slack/events ignore: type={event.get('type')}", file=sys.stderr)
+        return
+    if event.get("bot_id") or event.get("subtype"):
+        # Bot/own/edited messages (bot_message, message_changed, ...).
+        print(
+            "slack/events ignore: bot_id/subtype "
+            f"({event.get('bot_id')}/{event.get('subtype')})",
+            file=sys.stderr,
+        )
+        return
+    thread_ts = event.get("thread_ts")
+    if not thread_ts:
+        print("slack/events ignore: not a threaded reply", file=sys.stderr)
+        return
+    if thread_ts == event.get("ts"):
+        # The thread parent itself, not a reply to it.
+        print("slack/events ignore: parent message, not a reply", file=sys.stderr)
+        return
+    caption_text = event.get("text")
+    if not caption_text or not caption_text.strip():
+        print("slack/events ignore: empty text", file=sys.stderr)
+        return
+
+    # --- Row lookup: mirror serve_media's SANCTIONED direct-read exception. --
+    # This direct sheets_helpers/load_config import is permitted ONLY to READ
+    # the Content Queue (same documented exception serve_media cites). The
+    # publish itself MUST shell out to the router via _run_cli below — the
+    # executor never imports the publish path.
+    try:
+        from tools import sheets_helpers
+        from tools.config_loader import load_config
+
+        config = load_config(_media_config_path())
+        sheet_id = config.get("drive.content_queue_sheet_id")
+        service = sheets_helpers.get_sheets_service()
+        tab_name = _resolve_tab_name(sheet_id, service)
+        matches = sheets_helpers.find_rows_by_column_value(
+            sheet_id, tab_name, "slack_message_ts", thread_ts, service=service,
+        )
+    except Exception as exc:  # noqa: BLE001 — background thread, never raise
+        print(
+            f"slack/events lookup failed for thread_ts={thread_ts}: {exc}",
+            file=sys.stderr,
+        )
+        return
+
+    if not matches:
+        print(f"slack/events no row for thread_ts={thread_ts}", file=sys.stderr)
+        return
+    _row_number, row = matches[0]
+
+    # Load-bearing guard: reject-reason replies land in threads too, but reject
+    # sets status `rejected`. Only genuine edit-caption rows sit at `drafted`.
+    status = (row.get("status") or "").strip()
+    if status != "drafted":
+        print(
+            f"slack/events ignore: status={status!r} (not 'drafted') "
+            f"for thread_ts={thread_ts}",
+            file=sys.stderr,
+        )
+        return
+
+    # --- Dispatch: keep the publish in ONE place — shell out to the router. --
+    row_id = row.get("row_id", "")
+    code, result = _run_cli(
+        [
+            "tools.approval_router",
+            "--edit-commit",
+            "--row-id",
+            row_id,
+            "--caption-text",
+            caption_text,
+        ]
+    )
+    print(
+        json.dumps(
+            {"event_edit_commit_exit": code, "result": result, "row_id": row_id}
+        ),
+        flush=True,
+    )
+
+
+@app.post("/slack/events")
+def slack_events() -> Response:
+    raw_body = request.get_data()  # raw bytes — required for signature check
+    if not _verify_slack_signature(raw_body):
+        return jsonify({"error": "invalid signature"}), 401
+
+    try:
+        body = json.loads(raw_body or b"{}")
+    except ValueError:
+        return jsonify({"error": "bad json"}), 400
+
+    # URL verification handshake — respond synchronously with the challenge.
+    if body.get("type") == "url_verification":
+        return jsonify({"challenge": body.get("challenge", "")}), 200
+
+    if body.get("type") == "event_callback":
+        event = body.get("event") or {}
+        # Spawn background worker; ack immediately (Slack 3s window + retries).
+        threading.Thread(
+            target=_dispatch_event, args=(event,), daemon=True
+        ).start()
+
+    # Always ack 200 on a signed event_callback even if we ignore the event —
+    # Slack retries on non-2xx, which would cause duplicate processing.
     return ("", 200)
 
 
