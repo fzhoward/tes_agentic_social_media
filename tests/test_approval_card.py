@@ -446,8 +446,11 @@ def _writeback_harness(monkeypatch, *, post_response, card_exists=False,
             raise find_raises
         return find_result if find_result is not None else []
 
-    def fake_update(sheet_id, tab_name, row_number, updates, service=None):
-        calls["update"].append((sheet_id, tab_name, row_number, updates))
+    def fake_update(sheet_id, tab_name, row_number, updates, service=None,
+                    value_input_option="USER_ENTERED"):
+        calls["update"].append(
+            (sheet_id, tab_name, row_number, updates, value_input_option)
+        )
         if update_raises is not None:
             raise update_raises
         return None
@@ -480,11 +483,13 @@ def test_writeback_happy_path(monkeypatch):
     assert column_name == "row_id"
     assert value == row["row_id"]
 
-    # update_cells called exactly once with the ts for the located row.
+    # update_cells called exactly once with the ts for the located row, and
+    # written as RAW so Sheets stores the exact ts string (no float truncation).
     assert len(calls["update"]) == 1
-    u_sheet, u_tab, u_rownum, u_updates = calls["update"][0]
+    u_sheet, u_tab, u_rownum, u_updates, u_vio = calls["update"][0]
     assert u_rownum == 7
     assert u_updates == {"slack_message_ts": "1700000000.000100"}
+    assert u_vio == "RAW"
 
 
 def test_writeback_skipped_card_no_writeback(monkeypatch):

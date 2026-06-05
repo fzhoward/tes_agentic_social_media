@@ -13,6 +13,7 @@ import os
 import sys
 import traceback
 from pathlib import Path
+from unittest.mock import MagicMock
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -405,6 +406,81 @@ def run_tests() -> int:
             print(f"  - {fname}: {detail}")
         return 1
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Mocked unit tests for value_input_option threading (S44 Piece 1 follow-up).
+#
+# These are pytest-collectable test_* functions, fully mocked — NO live Sheets
+# I/O (unlike run_tests() above, which hits real sheets and only runs under
+# __main__). They prove the new keyword-only value_input_option threads
+# update_cells -> batch_update_cells into the batchUpdate body and defaults to
+# USER_ENTERED so no existing caller is affected. Run via:
+#     python -m pytest tests/test_sheets_helpers.py -q
+# ---------------------------------------------------------------------------
+
+def _captured_batch_body(monkeypatch, call):
+    """Run `call(service)` with _get_headers stubbed; return the batchUpdate body.
+
+    The service is a MagicMock, so values().batchUpdate(...) records its kwargs
+    and _execute_with_retry's .execute() is a no-op mock — no live API call.
+    """
+    monkeypatch.setattr(
+        sheets_helpers, "_get_headers",
+        lambda spreadsheet_id, tab_name, service=None: [
+            "row_id", "slack_message_ts",
+        ],
+    )
+    service = MagicMock(name="service")
+    call(service)
+    batch_update = service.spreadsheets.return_value.values.return_value.batchUpdate
+    assert batch_update.call_count == 1, batch_update.call_args_list
+    return batch_update.call_args.kwargs["body"]
+
+
+def test_update_cells_defaults_to_user_entered(monkeypatch):
+    # No value_input_option supplied → body carries USER_ENTERED (the default
+    # that keeps every existing caller unchanged).
+    body = _captured_batch_body(
+        monkeypatch,
+        lambda service: sheets_helpers.update_cells(
+            "sheet-1", "ContentQueue", 7,
+            {"slack_message_ts": "1780691824.503769"},
+            service=service,
+        ),
+    )
+    assert body["valueInputOption"] == "USER_ENTERED"
+
+
+def test_update_cells_raw_threads_through(monkeypatch):
+    # Explicit RAW threads update_cells -> batch_update_cells -> body unchanged,
+    # so Sheets stores the exact ts string (no float truncation).
+    body = _captured_batch_body(
+        monkeypatch,
+        lambda service: sheets_helpers.update_cells(
+            "sheet-1", "ContentQueue", 7,
+            {"slack_message_ts": "1780691824.503769"},
+            service=service,
+            value_input_option="RAW",
+        ),
+    )
+    assert body["valueInputOption"] == "RAW"
+    # The cell value rides through untouched as a string.
+    assert body["data"][0]["values"] == [["1780691824.503769"]]
+
+
+def test_batch_update_cells_raw_threads_through(monkeypatch):
+    # Same param on batch_update_cells directly reaches the body.
+    body = _captured_batch_body(
+        monkeypatch,
+        lambda service: sheets_helpers.batch_update_cells(
+            "sheet-1", "ContentQueue",
+            [(7, {"slack_message_ts": "1780691824.503769"})],
+            service=service,
+            value_input_option="RAW",
+        ),
+    )
+    assert body["valueInputOption"] == "RAW"
 
 
 if __name__ == "__main__":
