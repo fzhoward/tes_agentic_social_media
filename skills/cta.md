@@ -66,7 +66,7 @@ Not every CTA type fits every objective. These are the defaults.
 
 1. The CTA is always the last element of the caption. Nothing follows it.
 2. One CTA per post. Never stack multiple actions (e.g., "Call us or visit our website or DM us").
-3. The CTA must be direct. Use imperative phrasing: "Call us at..." not "Feel free to reach out if..."
+3. The CTA must be direct. Use imperative phrasing: "Call us at..." or "Drop a comment...." not "Feel free to reach out if..."
 4. The CTA must name the action specifically. "Contact us" is too vague. "Call us at {{PHONE}}" is specific.
 5. For lead generation posts, the post must name the customer situation or problem before the CTA. Never lead with the ask.
 6. Do not use urgency language unless the post is about a genuinely time-limited situation (seasonal availability, event deadline, limited slots).
@@ -105,7 +105,7 @@ Structure: [Question or prompt that invites a real response]
 Comment CTAs work best as open-ended questions tied to the post content. Avoid generic engagement bait.
 
 Weak: "Drop a comment below."
-Strong: "What would you use here?" / "Seen this on your jobs?"
+Strong: "What would you use here? Comment below." / "Seen this on your jobs? Leave a comment."
 
 ### Save CTA Phrasing
 

@@ -99,7 +99,7 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 |----|-------|---------|-----------|
 | E1 | **CTA is last element.** Nothing follows the CTA in the caption. | Soft fail | CTA Skill: General Rules |
 | E2 | **One CTA only.** The post must not stack multiple actions. | Soft fail | CTA Skill: General Rules |
-| E3 | **CTA names the action specifically.** "Contact us" is too vague. Must name the specific action (call, DM, visit, etc.) with the destination. | Soft fail | CTA Skill: General Rules |
+| E3 | **CTA names the action specifically.** "Contact us" is too vague. Must name the specific action (call, DM, visit, comment, etc.) with the destination. | Soft fail | CTA Skill: General Rules |
 | E4 | **Lead gen post names situation before the ask.** The post must describe the customer situation or problem before presenting the CTA. | Soft fail | Brand voice: Lead Generation Posts, CTA Skill |
 | E5 | **No urgency language in CTA** unless the post is about a genuinely time-limited situation. | Soft fail | CTA Skill: General Rules |
 
