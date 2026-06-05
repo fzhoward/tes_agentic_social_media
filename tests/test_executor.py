@@ -21,11 +21,13 @@ at call time). No subprocess runs, no API calls, no Slack posts.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
 import threading
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -355,6 +357,358 @@ def test_media_lookup_raises_404() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# POST /slack/events — Slack Events API edited-caption capture
+#
+# The endpoint verifies the Slack signature over the RAW body, answers the
+# url_verification challenge synchronously, and otherwise spawns a daemon
+# thread targeting _dispatch_event(inner_event) and acks 200. Like the media
+# route, _dispatch_event imports its deps LAZILY (`from tools import
+# sheets_helpers`, `from tools.config_loader import load_config`), so we patch
+# at the source and patch executor's own module-level helpers (_run_cli,
+# _resolve_tab_name, _verify_slack_signature) directly on `executor`.
+#
+# Endpoint-level tests replace threading.Thread with a recording stub so the
+# worker dispatch is observable and deterministic (no real thread). Worker-guard
+# tests call _dispatch_event(event) directly.
+# ---------------------------------------------------------------------------
+
+_EVENT_THREAD_TS = "1700000000.000100"
+
+_VALID_EVENT = {
+    "type": "message",
+    "text": "Here is my revised caption",
+    "thread_ts": _EVENT_THREAD_TS,
+    "ts": "1700000050.000200",
+    "channel": "C123",
+    "user": "U123",
+}
+
+
+def _recording_thread():
+    """Return (created, _Thread): a Thread stub that records constructions.
+
+    .start() is a no-op — the worker is NOT run; tests assert on what the
+    endpoint *handed* to the thread (target + args), keeping them deterministic.
+    """
+    created: list = []
+
+    class _Thread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None,
+                     **_extra):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+            created.append(self)
+
+        def start(self) -> None:
+            pass
+
+    return created, _Thread
+
+
+def _patch_row_read(stack: ExitStack, *, find_return=None,
+                    find_side_effect=None):
+    """Patch the lazy row-read deps used by _dispatch_event; return the find Mock.
+
+    Mirrors the /media tests' source-level patching (tools.sheets_helpers.*,
+    tools.config_loader.load_config) plus executor._resolve_tab_name.
+    """
+    cfg = Mock()
+    cfg.get.return_value = "sheet-123"
+    stack.enter_context(
+        patch("tools.config_loader.load_config", return_value=cfg))
+    stack.enter_context(
+        patch("tools.sheets_helpers.get_sheets_service", return_value=Mock()))
+    stack.enter_context(
+        patch.object(executor, "_resolve_tab_name", return_value="Sheet1"))
+    if find_side_effect is not None:
+        return stack.enter_context(patch(
+            "tools.sheets_helpers.find_rows_by_column_value",
+            side_effect=find_side_effect))
+    return stack.enter_context(patch(
+        "tools.sheets_helpers.find_rows_by_column_value",
+        return_value=find_return if find_return is not None else []))
+
+
+# --- Endpoint level --------------------------------------------------------
+
+def test_events_bad_signature_401() -> None:
+    # Invalid Slack signature → 401, and the worker thread is never spawned.
+    created, fake_thread = _recording_thread()
+    with patch.object(executor, "_verify_slack_signature", return_value=False), \
+            patch.object(executor.threading, "Thread", fake_thread):
+        client = executor.app.test_client()
+        resp = client.post(
+            "/slack/events",
+            data=json.dumps({"type": "event_callback", "event": _VALID_EVENT}),
+            content_type="application/json",
+        )
+        status = resp.status_code
+        body = resp.get_json()
+
+    _check(
+        "11. /slack/events — bad signature → 401, worker never spawned",
+        status == 401
+        and (body or {}).get("error") == "invalid signature"
+        and created == [],
+        f"status={status}, body={body!r}, threads={len(created)}",
+    )
+
+
+def test_events_url_verification_handshake() -> None:
+    # url_verification → synchronous 200 echoing the challenge; no worker.
+    created, fake_thread = _recording_thread()
+    with patch.object(executor, "_verify_slack_signature", return_value=True), \
+            patch.object(executor.threading, "Thread", fake_thread):
+        client = executor.app.test_client()
+        resp = client.post(
+            "/slack/events",
+            data=json.dumps(
+                {"type": "url_verification", "challenge": "abc123"}),
+            content_type="application/json",
+        )
+        status = resp.status_code
+        body = resp.get_json()
+
+    _check(
+        "12. /slack/events — url_verification → 200 {challenge}, no worker",
+        status == 200
+        and body == {"challenge": "abc123"}
+        and created == [],
+        f"status={status}, body={body!r}, threads={len(created)}",
+    )
+
+
+def test_events_event_callback_acks_and_spawns_worker() -> None:
+    # event_callback (valid sig) → 200 and a worker thread targeting
+    # _dispatch_event with the inner event.
+    created, fake_thread = _recording_thread()
+    with patch.object(executor, "_verify_slack_signature", return_value=True), \
+            patch.object(executor.threading, "Thread", fake_thread):
+        client = executor.app.test_client()
+        resp = client.post(
+            "/slack/events",
+            data=json.dumps({"type": "event_callback", "event": _VALID_EVENT}),
+            content_type="application/json",
+        )
+        status = resp.status_code
+
+    spawned = created[0] if created else None
+    _check(
+        "13. /slack/events — event_callback → 200, worker spawned with event",
+        status == 200
+        and len(created) == 1
+        and spawned.target is executor._dispatch_event
+        and spawned.args == (_VALID_EVENT,)
+        and spawned.daemon is True,
+        f"status={status}, threads={len(created)}, "
+        f"target={getattr(spawned, 'target', None)}, "
+        f"args={getattr(spawned, 'args', None)!r}",
+    )
+
+
+def test_events_malformed_json_400() -> None:
+    # Valid signature but the body is not JSON → 400, no worker.
+    created, fake_thread = _recording_thread()
+    with patch.object(executor, "_verify_slack_signature", return_value=True), \
+            patch.object(executor.threading, "Thread", fake_thread):
+        client = executor.app.test_client()
+        resp = client.post(
+            "/slack/events",
+            data="not json{",
+            content_type="application/json",
+        )
+        status = resp.status_code
+        body = resp.get_json()
+
+    _check(
+        "14. /slack/events — malformed JSON → 400, no worker",
+        status == 400
+        and (body or {}).get("error") == "bad json"
+        and created == [],
+        f"status={status}, body={body!r}, threads={len(created)}",
+    )
+
+
+# --- Worker guards (call _dispatch_event directly) -------------------------
+
+def test_event_non_message_ignored() -> None:
+    # event.type != "message" → ignored before any row read or dispatch.
+    event = {"type": "reaction_added", "thread_ts": _EVENT_THREAD_TS,
+             "ts": "x", "text": "hi"}
+    with ExitStack() as stack:
+        find = _patch_row_read(stack)
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        executor._dispatch_event(event)
+
+    _check(
+        "15. _dispatch_event — non-message type ignored (no read, no dispatch)",
+        find.called is False and run.called is False,
+        f"find_called={find.called}, run_called={run.called}",
+    )
+
+
+def test_event_bot_message_ignored() -> None:
+    # A message carrying bot_id is the bot's own post → ignored.
+    event = {"type": "message", "bot_id": "B123",
+             "thread_ts": _EVENT_THREAD_TS, "ts": "x", "text": "hi"}
+    with ExitStack() as stack:
+        find = _patch_row_read(stack)
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        executor._dispatch_event(event)
+
+    _check(
+        "16. _dispatch_event — bot_id message ignored",
+        find.called is False and run.called is False,
+        f"find_called={find.called}, run_called={run.called}",
+    )
+
+
+def test_event_subtype_ignored() -> None:
+    # A subtype (e.g. message_changed/edited) → ignored.
+    event = {"type": "message", "subtype": "message_changed",
+             "thread_ts": _EVENT_THREAD_TS, "ts": "x", "text": "hi"}
+    with ExitStack() as stack:
+        find = _patch_row_read(stack)
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        executor._dispatch_event(event)
+
+    _check(
+        "17. _dispatch_event — subtype (message_changed) ignored",
+        find.called is False and run.called is False,
+        f"find_called={find.called}, run_called={run.called}",
+    )
+
+
+def test_event_no_thread_ts_ignored() -> None:
+    # Top-level message (no thread_ts) does not map to a card → ignored.
+    event = {"type": "message", "ts": "1700000050.000200",
+             "text": "hello channel"}
+    with ExitStack() as stack:
+        find = _patch_row_read(stack)
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        executor._dispatch_event(event)
+
+    _check(
+        "18. _dispatch_event — no thread_ts ignored",
+        find.called is False and run.called is False,
+        f"find_called={find.called}, run_called={run.called}",
+    )
+
+
+def test_event_parent_message_ignored() -> None:
+    # The thread parent itself (thread_ts == ts) is not a reply → ignored.
+    event = {"type": "message", "thread_ts": _EVENT_THREAD_TS,
+             "ts": _EVENT_THREAD_TS, "text": "the original card text"}
+    with ExitStack() as stack:
+        find = _patch_row_read(stack)
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        executor._dispatch_event(event)
+
+    _check(
+        "19. _dispatch_event — parent message (thread_ts == ts) ignored",
+        find.called is False and run.called is False,
+        f"find_called={find.called}, run_called={run.called}",
+    )
+
+
+def test_event_empty_text_ignored() -> None:
+    # Whitespace-only reply text → ignored.
+    event = {"type": "message", "thread_ts": _EVENT_THREAD_TS,
+             "ts": "1700000050.000200", "text": "   \n  "}
+    with ExitStack() as stack:
+        find = _patch_row_read(stack)
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        executor._dispatch_event(event)
+
+    _check(
+        "20. _dispatch_event — empty/whitespace text ignored",
+        find.called is False and run.called is False,
+        f"find_called={find.called}, run_called={run.called}",
+    )
+
+
+def test_event_row_not_found() -> None:
+    # No row matches thread_ts → no dispatch, no raise.
+    with ExitStack() as stack:
+        find = _patch_row_read(stack, find_return=[])
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        raised = False
+        try:
+            executor._dispatch_event(dict(_VALID_EVENT))
+        except Exception:  # noqa: BLE001
+            raised = True
+
+    _check(
+        "21. _dispatch_event — no matching row → no dispatch, no raise",
+        find.called is True and run.called is False and raised is False,
+        f"find_called={find.called}, run_called={run.called}, raised={raised}",
+    )
+
+
+def test_event_row_read_raises_swallowed() -> None:
+    # The row lookup raises → swallowed (background thread), no dispatch.
+    with ExitStack() as stack:
+        find = _patch_row_read(stack, find_side_effect=Exception("sheets boom"))
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        raised = False
+        try:
+            executor._dispatch_event(dict(_VALID_EVENT))
+        except Exception:  # noqa: BLE001
+            raised = True
+
+    _check(
+        "22. _dispatch_event — row read raises → swallowed, no dispatch",
+        find.called is True and run.called is False and raised is False,
+        f"find_called={find.called}, run_called={run.called}, raised={raised}",
+    )
+
+
+def test_event_status_not_drafted_guard() -> None:
+    # Matched row not at 'drafted' (e.g. a reject-reason thread reply lands on
+    # an awaiting_approval/rejected row) → load-bearing guard blocks dispatch.
+    rows = [(2, {"row_id": "ROW-1", "status": "awaiting_approval"})]
+    with ExitStack() as stack:
+        find = _patch_row_read(stack, find_return=rows)
+        run = stack.enter_context(patch.object(executor, "_run_cli", Mock()))
+        executor._dispatch_event(dict(_VALID_EVENT))
+
+    _check(
+        "23. _dispatch_event — status != 'drafted' → no dispatch (reject guard)",
+        find.called is True and run.called is False,
+        f"find_called={find.called}, run_called={run.called}",
+    )
+
+
+def test_event_happy_path_dispatches_edit_commit() -> None:
+    # Matched 'drafted' row + valid threaded reply → shell out exactly once to
+    # the router's --edit-commit with the row_id and the reply text.
+    rows = [(2, {"row_id": "ROW-42", "status": "drafted"})]
+    run = Mock(return_value=(0, {"success": True}))
+    with ExitStack() as stack:
+        find = _patch_row_read(stack, find_return=rows)
+        stack.enter_context(patch.object(executor, "_run_cli", run))
+        executor._dispatch_event(dict(_VALID_EVENT))
+
+    expected = [
+        "tools.approval_router",
+        "--edit-commit",
+        "--row-id",
+        "ROW-42",
+        "--caption-text",
+        _VALID_EVENT["text"],
+    ]
+    called_args = run.call_args.args[0] if run.call_args else None
+    _check(
+        "24. _dispatch_event — drafted row → _run_cli --edit-commit with args",
+        find.called is True
+        and run.call_count == 1
+        and called_args == expected,
+        f"run_count={run.call_count}, args={called_args!r}",
+    )
+
+
 def run_tests() -> int:
     print()
     print("Deterministic tests (no API calls, no subprocess, no Slack):")
@@ -368,6 +722,21 @@ def run_tests() -> int:
     test_media_empty_url_tmp_fallback()
     test_media_no_drive_no_local_404()
     test_media_lookup_raises_404()
+    # S44 Piece 2b — /slack/events endpoint + _dispatch_event guards
+    test_events_bad_signature_401()
+    test_events_url_verification_handshake()
+    test_events_event_callback_acks_and_spawns_worker()
+    test_events_malformed_json_400()
+    test_event_non_message_ignored()
+    test_event_bot_message_ignored()
+    test_event_subtype_ignored()
+    test_event_no_thread_ts_ignored()
+    test_event_parent_message_ignored()
+    test_event_empty_text_ignored()
+    test_event_row_not_found()
+    test_event_row_read_raises_swallowed()
+    test_event_status_not_drafted_guard()
+    test_event_happy_path_dispatches_edit_commit()
 
     total = _PASSED + len(_FAILURES)
     print()
