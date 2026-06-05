@@ -304,12 +304,15 @@ def update_cells(
     row_number: int,
     col_updates: dict,
     service: Any = None,
+    *,
+    value_input_option: str = "USER_ENTERED",
 ) -> None:
     batch_update_cells(
         spreadsheet_id,
         tab_name,
         [(row_number, col_updates)],
         service=service,
+        value_input_option=value_input_option,
     )
 
 
@@ -318,6 +321,8 @@ def batch_update_cells(
     tab_name: str,
     updates: list[tuple[int, dict]],
     service: Any = None,
+    *,
+    value_input_option: str = "USER_ENTERED",
 ) -> None:
     if not updates:
         return
@@ -348,7 +353,7 @@ def batch_update_cells(
             })
 
     body = {
-        "valueInputOption": "USER_ENTERED",
+        "valueInputOption": value_input_option,
         "data": data,
     }
     _execute_with_retry(

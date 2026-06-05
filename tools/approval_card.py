@@ -363,6 +363,10 @@ def post_approval_card(row: dict, config: Any) -> dict:
                     sheet_id, tab_name, row_number,
                     {"slack_message_ts": ts},
                     service=service,
+                    # RAW so Sheets stores the exact ts string. USER_ENTERED
+                    # parses it as a number and truncates precision (drops the
+                    # last digit), breaking the /slack/events thread_ts match.
+                    value_input_option="RAW",
                 )
         except Exception as exc:
             print(
