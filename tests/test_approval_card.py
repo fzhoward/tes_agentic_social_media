@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -102,12 +103,12 @@ def _find_block(blocks: list[dict], block_type: str) -> dict | None:
 
 def test_build_blocks_facebook_full():
     row = _base_row()
-    fallback, blocks = approval_card.build_approval_blocks(row)
+    config = _make_config()
+    fallback, blocks = approval_card.build_approval_blocks(row, config)
 
     text = _flatten_text(blocks)
     assert "🔵 Facebook" in text
     assert row["caption"] in text
-    assert row["media_url"] in text  # link embedded as <url|View media>
     assert row["cta_text"] in text
     assert row["first_comment"] in text
     assert row["row_id"] in text  # header has row_id
@@ -126,7 +127,7 @@ def test_build_blocks_facebook_full():
 
 def test_build_blocks_instagram():
     row = _base_row(platform="instagram")
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     text = _flatten_text(blocks)
     assert "📸 Instagram" in text
     assert "🔵" not in text
@@ -139,7 +140,7 @@ def test_build_blocks_instagram():
 def test_build_blocks_gbp_short_caption():
     short = "Short GBP update."
     row = _base_row(platform="gbp", caption=short)
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     text = _flatten_text(blocks)
     assert "📍 GBP" in text
     # Caption appears unchanged (no ellipsis truncation)
@@ -161,7 +162,7 @@ def test_build_blocks_gbp_short_caption():
 def test_build_blocks_long_caption_truncated():
     long_caption = "x" * 5000
     row = _base_row(caption=long_caption)
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     text = _flatten_text(blocks)
     # Truncated text appears (the trimmed-and-ellipsis form), not the full 5000
     assert long_caption not in text
@@ -180,7 +181,7 @@ def test_build_blocks_missing_optional_fields():
         creative_hook_text="",
         media_format_used="",
     )
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     text = _flatten_text(blocks)
     assert "First comment:" not in text
     assert "CTA:" not in text
@@ -199,7 +200,7 @@ def test_build_blocks_missing_optional_fields():
 
 def test_action_ids_contain_row_id():
     row = _base_row(row_id="STR-20260601-IG-03")
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     actions = _find_block(blocks, "actions")
     assert actions is not None
 
@@ -215,6 +216,129 @@ def test_action_ids_contain_row_id():
         assert elt["value"] == "STR-20260601-IG-03"
 
     assert seen == expected_prefixes
+
+
+# ---------------------------------------------------------------------------
+# Image block (S43 Piece 2)
+# ---------------------------------------------------------------------------
+
+import hashlib  # noqa: E402
+import hmac  # noqa: E402
+
+_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _image_blocks(blocks: list[dict]) -> list[dict]:
+    return [b for b in blocks if b.get("type") == "image"]
+
+
+def test_image_block_present_when_configured(monkeypatch):
+    monkeypatch.setenv("MEDIA_URL_SECRET", "test-secret")
+    config = _make_config(approval={"media_base_url": "https://executor.tessys.org"})
+    row = _base_row()
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    images = _image_blocks(blocks)
+    assert len(images) == 1
+    image = images[0]
+
+    prefix = f"https://executor.tessys.org/media/{row['row_id']}/"
+    assert image["image_url"].startswith(prefix)
+    token = image["image_url"][len(prefix):]
+    assert _TOKEN_RE.match(token), token
+
+    assert isinstance(image["alt_text"], str) and image["alt_text"]
+
+
+def test_image_url_token_matches_executor_signing(monkeypatch):
+    monkeypatch.setenv("MEDIA_URL_SECRET", "test-secret")
+    config = _make_config(approval={"media_base_url": "https://executor.tessys.org"})
+    row = _base_row()
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+    image = _image_blocks(blocks)[0]
+
+    expected = hmac.new(
+        b"test-secret", row["row_id"].encode(), hashlib.sha256,
+    ).hexdigest()[:32]
+    assert image["image_url"].endswith(f"/{expected}")
+    assert f"/media/{row['row_id']}/{expected}" in image["image_url"]
+
+    # Pin the two helpers directly together: the card's URL builder must
+    # produce the same token the executor's route verifies with. Skip if the
+    # executor's web deps (flask) aren't installed in this environment — the
+    # token contract above is already verified independently.
+    try:
+        from tools import executor  # noqa: E402
+    except ImportError:
+        pytest.skip("tools.executor unavailable (flask not installed)")
+    built = approval_card._media_image_url(
+        row["row_id"], "https://executor.tessys.org",
+    )
+    assert built.endswith(executor._sign_media_token(row["row_id"]))
+
+
+def test_no_image_block_when_base_url_unconfigured(monkeypatch):
+    monkeypatch.setenv("MEDIA_URL_SECRET", "test-secret")
+    config = _make_config()  # no media_base_url
+    row = _base_row()
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    assert _image_blocks(blocks) == []
+    actions = _find_block(blocks, "actions")
+    assert actions is not None
+    assert len(actions["elements"]) == 5
+
+
+def test_no_image_block_when_secret_unset(monkeypatch):
+    monkeypatch.delenv("MEDIA_URL_SECRET", raising=False)
+    config = _make_config(approval={"media_base_url": "https://executor.tessys.org"})
+    row = _base_row()
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    assert _image_blocks(blocks) == []
+    actions = _find_block(blocks, "actions")
+    assert actions is not None
+    assert len(actions["elements"]) == 5
+
+
+def test_no_image_block_when_row_has_no_media_url(monkeypatch):
+    monkeypatch.setenv("MEDIA_URL_SECRET", "test-secret")
+    config = _make_config(approval={"media_base_url": "https://executor.tessys.org"})
+    row = _base_row(media_url="")
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    assert _image_blocks(blocks) == []
+    actions = _find_block(blocks, "actions")
+    assert actions is not None
+    assert len(actions["elements"]) == 5
+
+
+def test_media_image_url_helper(monkeypatch):
+    monkeypatch.setenv("MEDIA_URL_SECRET", "test-secret")
+    url = approval_card._media_image_url(
+        "STR-20260528-FB-01", "https://executor.tessys.org",
+    )
+    assert url is not None
+    prefix = "https://executor.tessys.org/media/STR-20260528-FB-01/"
+    assert url.startswith(prefix)
+    assert _TOKEN_RE.match(url[len(prefix):])
+
+    # Empty base_url → None.
+    assert approval_card._media_image_url("STR-20260528-FB-01", "") is None
+
+    # Empty row_id → None.
+    assert approval_card._media_image_url("", "https://executor.tessys.org") is None
+
+    # Secret unset → None.
+    monkeypatch.delenv("MEDIA_URL_SECRET", raising=False)
+    assert approval_card._media_image_url(
+        "STR-20260528-FB-01", "https://executor.tessys.org",
+    ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +495,7 @@ def test_critic_block_warnings_with_fix_instruction():
         critic_score="soft_fail",
         critic_notes=_critic_notes(warnings),
     )
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     text = _flatten_text(blocks)
     assert "Critic — 2 flagged for your review" in text
     assert "(score: soft_fail)" in text
@@ -387,7 +511,7 @@ def test_critic_block_clean_row():
         critic_score="pass",
         critic_notes=_critic_notes([]),
     )
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     text = _flatten_text(blocks)
     assert "✅ *Critic: clean* (score: pass)" in text
     assert "flagged for your review" not in text
@@ -396,7 +520,7 @@ def test_critic_block_clean_row():
 def test_critic_block_omitted_when_critic_did_not_run():
     # Empty critic_notes AND no critic_score → no Critic block at all.
     row = _base_row(critic_score="", critic_notes="")
-    _, blocks = approval_card.build_approval_blocks(row)
+    _, blocks = approval_card.build_approval_blocks(row, _make_config())
     text = _flatten_text(blocks)
     assert "Critic" not in text
     assert approval_card._critic_block(row) is None
