@@ -408,6 +408,165 @@ def test_duplicate_card_prevention(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# slack_message_ts writeback (S44 Piece 1)
+# ---------------------------------------------------------------------------
+
+def _writeback_harness(monkeypatch, *, post_response, card_exists=False,
+                       find_result=None, find_raises=None, update_raises=None):
+    """Wire post_approval_card's dependencies for writeback tests.
+
+    Returns a calls dict recording find_rows_by_column_value / update_cells
+    invocations so each test can assert on them.
+    """
+    monkeypatch.setattr(
+        slack_helpers, "get_channel_history",
+        lambda channel, limit=20: (
+            [{"ts": "1.0", "text": "STR-20260528-FB-01 already here", "blocks": []}]
+            if card_exists else []
+        ),
+    )
+    monkeypatch.setattr(
+        slack_helpers, "post_message",
+        lambda channel, text, blocks=None, thread_ts=None: post_response,
+    )
+
+    calls = {"find": [], "update": []}
+
+    monkeypatch.setattr(
+        sheets_helpers, "get_sheets_service", lambda: MagicMock(name="service"),
+    )
+    monkeypatch.setattr(
+        approval_card, "_resolve_tab_name",
+        lambda sheet_id, service: "ContentQueue",
+    )
+
+    def fake_find(sheet_id, tab_name, column_name, value, service=None):
+        calls["find"].append((sheet_id, tab_name, column_name, value))
+        if find_raises is not None:
+            raise find_raises
+        return find_result if find_result is not None else []
+
+    def fake_update(sheet_id, tab_name, row_number, updates, service=None):
+        calls["update"].append((sheet_id, tab_name, row_number, updates))
+        if update_raises is not None:
+            raise update_raises
+        return None
+
+    monkeypatch.setattr(sheets_helpers, "find_rows_by_column_value", fake_find)
+    monkeypatch.setattr(sheets_helpers, "update_cells", fake_update)
+
+    return calls
+
+
+def test_writeback_happy_path(monkeypatch):
+    row = _base_row()
+    config = _make_config()
+    post_response = {"ok": True, "ts": "1700000000.000100", "channel": "C123"}
+    calls = _writeback_harness(
+        monkeypatch,
+        post_response=post_response,
+        find_result=[(7, dict(row))],
+    )
+
+    response = approval_card.post_approval_card(row, config)
+
+    # Return contract unchanged: original post response handed back as-is.
+    assert response is post_response
+
+    # Located the row by row_id.
+    assert len(calls["find"]) == 1
+    sheet_id, tab_name, column_name, value = calls["find"][0]
+    assert sheet_id == "fake-sheet-id"
+    assert column_name == "row_id"
+    assert value == row["row_id"]
+
+    # update_cells called exactly once with the ts for the located row.
+    assert len(calls["update"]) == 1
+    u_sheet, u_tab, u_rownum, u_updates = calls["update"][0]
+    assert u_rownum == 7
+    assert u_updates == {"slack_message_ts": "1700000000.000100"}
+
+
+def test_writeback_skipped_card_no_writeback(monkeypatch):
+    row = _base_row()
+    config = _make_config()
+    calls = _writeback_harness(
+        monkeypatch,
+        post_response={"ok": True, "ts": "1700000000.000100"},
+        card_exists=True,
+    )
+
+    response = approval_card.post_approval_card(row, config)
+
+    assert response.get("skipped") is True
+    assert response.get("ok") is False
+    assert calls["find"] == []
+    assert calls["update"] == []
+
+
+def test_writeback_no_ts_no_writeback(monkeypatch):
+    row = _base_row()
+    config = _make_config()
+    post_response = {"ok": False, "error": "rate_limited"}  # no "ts" key
+    calls = _writeback_harness(
+        monkeypatch,
+        post_response=post_response,
+        find_result=[(7, dict(row))],
+    )
+
+    response = approval_card.post_approval_card(row, config)
+
+    assert response is post_response
+    assert calls["find"] == []
+    assert calls["update"] == []
+
+
+def test_writeback_row_not_found(monkeypatch):
+    row = _base_row()
+    config = _make_config()
+    post_response = {"ok": True, "ts": "1700000000.000100"}
+    calls = _writeback_harness(
+        monkeypatch,
+        post_response=post_response,
+        find_result=[],  # no matching row
+    )
+
+    response = approval_card.post_approval_card(row, config)
+
+    # No exception, post response returned, no update attempted.
+    assert response is post_response
+    assert len(calls["find"]) == 1
+    assert calls["update"] == []
+
+
+def test_writeback_raises_is_swallowed(monkeypatch):
+    row = _base_row()
+    config = _make_config()
+    post_response = {"ok": True, "ts": "1700000000.000100"}
+
+    # find raises → swallowed, response still returned.
+    calls = _writeback_harness(
+        monkeypatch,
+        post_response=post_response,
+        find_raises=RuntimeError("sheets boom"),
+    )
+    response = approval_card.post_approval_card(row, config)
+    assert response is post_response
+    assert calls["update"] == []
+
+    # update raises → swallowed, response still returned.
+    calls = _writeback_harness(
+        monkeypatch,
+        post_response=post_response,
+        find_result=[(7, dict(row))],
+        update_raises=RuntimeError("update boom"),
+    )
+    response = approval_card.post_approval_card(row, config)
+    assert response is post_response
+    assert len(calls["update"]) == 1  # attempted, then raised + swallowed
+
+
+# ---------------------------------------------------------------------------
 # 9-11: CLI --reschedule flag
 # ---------------------------------------------------------------------------
 
