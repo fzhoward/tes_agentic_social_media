@@ -105,7 +105,7 @@ Structure: [Question or prompt that invites a real response]
 Comment CTAs work best as open-ended questions tied to the post content. Avoid generic engagement bait.
 
 Weak: "Drop a comment below."
-Strong: "What would you use here? Comment below." / "Seen this on your jobs? Leave a comment."
+Strong: "What would you use here? Drop a comment a tell us." / "Seen this on your jobs? Drop a comment."
 
 ### Save CTA Phrasing
 
