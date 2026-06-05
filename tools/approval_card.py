@@ -13,7 +13,7 @@ overdue approval rows, slides each one 24h forward, and auto-rejects after
 ``approval.auto_reject_after_misses`` consecutive misses.
 
 Public entry points:
-    build_approval_blocks(row) -> (fallback_text, blocks)
+    build_approval_blocks(row, config) -> (fallback_text, blocks)
     post_approval_card(row, config) -> Slack API response
     post_pending_approvals(config, *, dry_run=False) -> list[dict]
     reschedule_missed_approvals(config, *, dry_run=False) -> list[dict]
@@ -21,6 +21,8 @@ Public entry points:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -48,6 +50,20 @@ _CHANNEL_HISTORY_LIMIT = 50
 _MAX_WARNING_BLOCK_LEN = 2800
 
 _RESCHEDULE_TAG_RE = re.compile(r"\[RESCHEDULED:\s*(\d+)\]")
+
+
+def _media_image_url(row_id: str, base_url: str) -> str | None:
+    """Build the signed executor media URL for a row, or None if not buildable.
+
+    Mirrors tools/executor.py::_sign_media_token exactly (same secret env var,
+    same HMAC-SHA256, same 32-char hex truncation). Returns None when the
+    secret or base_url is missing so the caller can omit the image block.
+    """
+    secret = os.environ.get("MEDIA_URL_SECRET", "")
+    if not secret or not base_url or not row_id:
+        return None
+    token = hmac.new(secret.encode(), row_id.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{base_url.rstrip('/')}/media/{row_id}/{token}"
 
 
 def _platform_badge(platform: str) -> str:
@@ -170,8 +186,9 @@ def _critic_block(row: dict) -> dict | None:
     }
 
 
-def build_approval_blocks(row: dict) -> tuple[str, list[dict]]:
+def build_approval_blocks(row: dict, config: Any) -> tuple[str, list[dict]]:
     """Build the (fallback_text, blocks) tuple for a Slack approval card."""
+    base_url = config.get("approval.media_base_url", "")
     row_id = row.get("row_id", "")
     platform = row.get("platform", "")
     content_type = row.get("content_type", "")
@@ -209,13 +226,19 @@ def build_approval_blocks(row: dict) -> tuple[str, list[dict]]:
     if critic_block is not None:
         blocks.append(critic_block)
 
+    media_url_id = (row.get("media_url") or "").strip()
+    image_url = _media_image_url(row.get("row_id", ""), base_url) if media_url_id else None
+    if image_url:
+        blocks.append({
+            "type": "image",
+            "image_url": image_url,
+            "alt_text": f"Generated media for {row.get('row_id', '')}".strip(),
+        })
+
     media_lines: list[str] = []
     media_format_used = (row.get("media_format_used") or "").strip()
     if media_format_used:
         media_lines.append(f"*Media format:* {media_format_used}")
-    media_url = (row.get("media_url") or "").strip()
-    if media_url:
-        media_lines.append(f"<{media_url}|View media>")
     cta_text = (row.get("cta_text") or "").strip()
     if cta_text:
         media_lines.append(f"*CTA:* {cta_text}")
@@ -313,7 +336,7 @@ def post_approval_card(row: dict, config: Any) -> dict:
             "row_id": row_id,
         }
 
-    fallback_text, blocks = build_approval_blocks(row)
+    fallback_text, blocks = build_approval_blocks(row, config)
     return slack_helpers.post_message(channel, fallback_text, blocks=blocks)
 
 
@@ -340,7 +363,7 @@ def post_pending_approvals(config: Any, *, dry_run: bool = False) -> list[dict]:
     for row in rows:
         row_id = row.get("row_id", "")
         if dry_run:
-            fallback_text, blocks = build_approval_blocks(row)
+            fallback_text, blocks = build_approval_blocks(row, config)
             results.append({
                 "row_id": row_id,
                 "dry_run": True,
@@ -562,7 +585,7 @@ def _cli() -> int:
             return 1
         _, row = matches[0]
         if args.dry_run:
-            fallback_text, blocks = build_approval_blocks(row)
+            fallback_text, blocks = build_approval_blocks(row, config)
             print(json.dumps(
                 {"row_id": args.row_id, "fallback_text": fallback_text, "blocks": blocks},
                 indent=2, ensure_ascii=False,
