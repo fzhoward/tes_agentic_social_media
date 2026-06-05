@@ -337,7 +337,41 @@ def post_approval_card(row: dict, config: Any) -> dict:
         }
 
     fallback_text, blocks = build_approval_blocks(row, config)
-    return slack_helpers.post_message(channel, fallback_text, blocks=blocks)
+    response = slack_helpers.post_message(channel, fallback_text, blocks=blocks)
+
+    ts = response.get("ts") if isinstance(response, dict) else None
+    if ts:
+        # Best-effort: persist the card's Slack ts onto the row so threaded
+        # replies (Edit Caption) can be mapped back via thread_ts. A failure
+        # here must never sink the post — the post succeeding is the contract.
+        try:
+            sheet_id = config.get("drive.content_queue_sheet_id")
+            service = sheets_helpers.get_sheets_service()
+            tab_name = _resolve_tab_name(sheet_id, service)
+            matches = sheets_helpers.find_rows_by_column_value(
+                sheet_id, tab_name, "row_id", row_id, service=service,
+            )
+            if not matches:
+                print(
+                    f"[approval_card] slack_message_ts writeback: "
+                    f"no row found for {row_id}",
+                    file=sys.stderr,
+                )
+            else:
+                row_number, _ = matches[0]
+                sheets_helpers.update_cells(
+                    sheet_id, tab_name, row_number,
+                    {"slack_message_ts": ts},
+                    service=service,
+                )
+        except Exception as exc:
+            print(
+                f"[approval_card] slack_message_ts writeback failed for "
+                f"{row_id}: {exc}",
+                file=sys.stderr,
+            )
+
+    return response
 
 
 def _resolve_tab_name(sheet_id: str, service: Any) -> str:
