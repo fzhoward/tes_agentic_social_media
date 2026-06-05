@@ -9,6 +9,7 @@ Run from the project root:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -452,9 +453,16 @@ def test_reschedule_missed_single(monkeypatch):
     assert results[0]["action"] == "reschedule"
     assert results[0]["miss_count"] == 1
 
-    # update_cells was called with scheduled_datetime + draft_notes change.
-    _, col_updates = sheets["updates"][-1]
-    assert "scheduled_datetime" in col_updates
+    # Find the reschedule update specifically rather than assuming it is the
+    # last update_cells call. Adjusted for the S44 Piece 1 slack_message_ts
+    # writeback: post_approval_card now appends an extra update_cells
+    # (slack_message_ts) when the fresh card is re-posted, so the reschedule
+    # update is no longer guaranteed to be sheets["updates"][-1].
+    reschedule_updates = [
+        u for _, u in sheets["updates"] if "scheduled_datetime" in u
+    ]
+    assert reschedule_updates, "expected a reschedule update with scheduled_datetime"
+    col_updates = reschedule_updates[-1]
     assert "[RESCHEDULED: 1]" in col_updates["draft_notes"]
 
     # A fresh approval card was posted to #approvals.
@@ -504,3 +512,269 @@ def test_reschedule_not_yet_missed(monkeypatch):
 
     assert results == []
     assert sheets["updates"] == []
+
+
+# ===========================================================================
+# S44 Piece 2a — _publish_and_resolve refactor parity + --edit-commit
+# ===========================================================================
+
+def _publish_success(*, post_id="7606301", when="2026-06-01T08:55:00+00:00"):
+    def fake_publish(target_row, config, *, dry_run=False):
+        return {
+            "success": True,
+            "socialbu_post_id": post_id,
+            "published_datetime": when,
+            "error": None,
+            "payload": {},
+        }
+    return fake_publish
+
+
+def _publish_failure(*, error="HTTP 422: validation failed"):
+    def fake_publish(target_row, config, *, dry_run=False):
+        return {
+            "success": False,
+            "socialbu_post_id": None,
+            "published_datetime": None,
+            "error": error,
+            "payload": {},
+        }
+    return fake_publish
+
+
+def _run_edit_commit_cli(monkeypatch, capsys, config, row_id, caption_text):
+    """Drive ``approval_router._cli()`` in --edit-commit mode.
+
+    Returns ``(return_code, parsed_json_result)``.
+    """
+    monkeypatch.setattr(
+        "tools.config_loader.load_config", lambda path=None: config,
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "approval_router", "--edit-commit",
+            "--row-id", row_id,
+            "--caption-text", caption_text,
+        ],
+    )
+    rc = approval_router._cli()
+    out = capsys.readouterr().out
+    return rc, json.loads(out)
+
+
+# --- A. Approve-path parity (refactor safety) ------------------------------
+# test_approve_success (success) and test_approve_publish_fails (revert +
+# error post) above already cover the approve path through the extracted
+# _publish_and_resolve helper. This adds the two A2 assertions those tests
+# don't make: approved_datetime is cleared on revert, and a thread reply is
+# posted to the card thread on publish failure.
+
+def test_approve_publish_fail_reverts_datetime_and_thread_replies(monkeypatch):
+    row = _base_row()
+    sheets = _wire_sheets(monkeypatch, rows=[row])
+    slack = _wire_slack(monkeypatch)
+
+    monkeypatch.setattr(
+        socialbu_publish, "publish_row", _publish_failure(error="boom"),
+    )
+
+    payload = _base_payload(f"approve::{row['row_id']}")
+    result = approval_router.handle_action(payload, _make_config())
+
+    assert result["action"] == "approve"
+    assert result["success"] is False
+
+    # Revert clears approved_datetime.
+    revert = sheets["updates"][-1][1]
+    assert revert["status"] == "awaiting_approval"
+    assert revert["approved_datetime"] == ""
+
+    # _thread_reply fired on the card thread about the failure.
+    thread_replies = [
+        p for p in slack["post"]
+        if p["thread_ts"] == payload["message"]["ts"]
+    ]
+    assert any("Publish failed" in p["text"] for p in thread_replies)
+
+    # _post_error fired to #system-errors.
+    assert any(p["channel"] == "#system-errors" for p in slack["post"])
+
+
+# --- B. _publish_and_resolve tolerates an empty payload --------------------
+
+def test_publish_and_resolve_empty_payload_no_slack_side_effects(monkeypatch):
+    row = _base_row(status="approved")
+    sheets = _wire_sheets(monkeypatch, rows=[row])
+    slack = _wire_slack(monkeypatch)
+
+    monkeypatch.setattr(
+        socialbu_publish, "publish_row", _publish_success(post_id="999"),
+    )
+
+    # Empty-dict payload: the reaction/thread helpers must no-op, not raise.
+    result = approval_router._publish_and_resolve(
+        {}, _make_config(), row["row_id"],
+        "fake-sheet-id", "Queue", sheets_helpers.get_sheets_service(), 2, row,
+    )
+
+    assert result["success"] is True
+    assert result["action"] == "approve"
+    # No reaction and no thread/error post fired from an empty payload.
+    assert slack["react"] == []
+    assert slack["post"] == []
+    # Published write still happened.
+    assert sheets["updates"][-1][1]["status"] == "published"
+
+
+# --- C. --edit-commit happy path -------------------------------------------
+
+def test_edit_commit_happy_path(monkeypatch, capsys):
+    row = _base_row(status="drafted")
+    sheets = _wire_sheets(monkeypatch, rows=[row])
+    _wire_slack(monkeypatch)
+
+    publish_calls = []
+
+    def fake_publish(target_row, config, *, dry_run=False):
+        publish_calls.append(dict(target_row))
+        return {
+            "success": True,
+            "socialbu_post_id": "7606301",
+            "published_datetime": "2026-06-01T08:55:00+00:00",
+            "error": None,
+            "payload": {},
+        }
+
+    monkeypatch.setattr(socialbu_publish, "publish_row", fake_publish)
+
+    rc, result = _run_edit_commit_cli(
+        monkeypatch, capsys, _make_config(), row["row_id"], "new caption",
+    )
+
+    assert rc == 0
+    assert result["success"] is True
+    assert result["action"] == "edit_commit"
+
+    # First update wrote caption + approved + approved_datetime.
+    first = sheets["updates"][0][1]
+    assert first["caption"] == "new caption"
+    assert first["status"] == "approved"
+    assert first.get("approved_datetime")
+
+    # publish_row was called with the edited caption in the row.
+    assert len(publish_calls) == 1
+    assert publish_calls[0]["caption"] == "new caption"
+
+    # Final write set the published state.
+    assert sheets["updates"][-1][1]["status"] == "published"
+    assert sheets["updates"][-1][1]["socialbu_post_id"] == "7606301"
+
+
+# --- D. --edit-commit status guard (not 'drafted') -------------------------
+
+def test_edit_commit_status_guard(monkeypatch, capsys):
+    row = _base_row(status="awaiting_approval")  # NOT drafted
+    sheets = _wire_sheets(monkeypatch, rows=[row])
+    _wire_slack(monkeypatch)
+
+    publish_calls = []
+
+    def fake_publish(target_row, config, *, dry_run=False):
+        publish_calls.append(target_row)
+        return {"success": True}
+
+    monkeypatch.setattr(socialbu_publish, "publish_row", fake_publish)
+
+    rc, result = _run_edit_commit_cli(
+        monkeypatch, capsys, _make_config(), row["row_id"], "new caption",
+    )
+
+    assert rc == 1
+    assert result["success"] is False
+    assert result["action"] == "edit_commit"
+    # Message names the actual status that blocked the commit.
+    assert "awaiting_approval" in result["message"]
+    # No caption write, no publish.
+    assert sheets["updates"] == []
+    assert publish_calls == []
+
+
+# --- E. --edit-commit row not found ----------------------------------------
+
+def test_edit_commit_row_not_found(monkeypatch, capsys):
+    sheets = _wire_sheets(monkeypatch, rows=[])  # no matching row
+    _wire_slack(monkeypatch)
+
+    publish_calls = []
+
+    def fake_publish(target_row, config, *, dry_run=False):
+        publish_calls.append(target_row)
+        return {"success": True}
+
+    monkeypatch.setattr(socialbu_publish, "publish_row", fake_publish)
+
+    rc, result = _run_edit_commit_cli(
+        monkeypatch, capsys, _make_config(), "STR-NOPE-01", "new caption",
+    )
+
+    assert rc == 1
+    assert result["success"] is False
+    assert result["action"] == "edit_commit"
+    assert "not found" in (result["error"] or "").lower()
+    assert sheets["updates"] == []
+    assert publish_calls == []
+
+
+# --- F. --edit-commit publish failure reverts ------------------------------
+
+def test_edit_commit_publish_failure_reverts(monkeypatch, capsys):
+    row = _base_row(status="drafted")
+    sheets = _wire_sheets(monkeypatch, rows=[row])
+    _wire_slack(monkeypatch)
+
+    monkeypatch.setattr(
+        socialbu_publish, "publish_row",
+        _publish_failure(error="HTTP 500: socialbu down"),
+    )
+
+    rc, result = _run_edit_commit_cli(
+        monkeypatch, capsys, _make_config(), row["row_id"], "new caption",
+    )
+
+    assert rc == 1
+    assert result["success"] is False
+    assert result["action"] == "edit_commit"
+
+    # The shared helper's failure-revert applies to the edit-commit path too:
+    # status back to awaiting_approval, approved_datetime cleared.
+    revert = sheets["updates"][-1][1]
+    assert revert["status"] == "awaiting_approval"
+    assert revert["approved_datetime"] == ""
+
+
+# --- G. edit_caption reply text (no Critic re-run wording) ------------------
+
+def test_edit_caption_reply_text_drops_critic_rerun(monkeypatch):
+    row = _base_row()
+    sheets = _wire_sheets(monkeypatch, rows=[row])
+    slack = _wire_slack(monkeypatch)
+
+    payload = _base_payload(f"edit_caption::{row['row_id']}")
+    result = approval_router.handle_action(payload, _make_config())
+
+    assert result["success"] is True
+    # Status still resets to drafted.
+    assert sheets["updates"][-1][1]["status"] == "drafted"
+
+    thread_replies = [
+        p for p in slack["post"]
+        if p["thread_ts"] == payload["message"]["ts"]
+    ]
+    assert thread_replies
+    text = thread_replies[0]["text"]
+    # Old misleading wording is gone (no Critic re-run promise).
+    assert "re-run the Critic" not in text
+    assert "Critic" not in text
+    # New wording present.
+    assert "no re-review" in text.lower()
