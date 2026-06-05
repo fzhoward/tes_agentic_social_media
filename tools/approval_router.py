@@ -154,6 +154,66 @@ def _row_not_found(action: str, row_id: str) -> dict:
 # Handlers
 # ---------------------------------------------------------------------------
 
+def _publish_and_resolve(
+    payload: dict,
+    config: Any,
+    row_id: str,
+    sheet_id,
+    tab_name,
+    service,
+    row_number,
+    row,
+    action: str = "approve",
+) -> dict:
+    """Publish a row via SocialBu and resolve the sheet + Slack side effects.
+
+    Owns everything from the SocialBu publish onward, shared by the approve
+    handler and the ``--edit-commit`` flow. The ``action`` label is carried
+    through to the returned dict and the error post so each caller is
+    attributed correctly. ``payload`` may be an empty dict: the reaction and
+    thread helpers no-op when it lacks ``channel``/``message`` keys.
+    """
+    publish_result = socialbu_publish.publish_row(row, config)
+
+    if publish_result.get("success"):
+        sheets_helpers.update_cells(
+            sheet_id, tab_name, row_number,
+            {
+                "status": "published",
+                "socialbu_post_id": publish_result.get("socialbu_post_id") or "",
+                "published_datetime": publish_result.get("published_datetime") or "",
+            },
+            service=service,
+        )
+        _add_reaction(payload, "white_check_mark")
+        return {
+            "action": action,
+            "row_id": row_id,
+            "success": True,
+            "message": (
+                f"Published. socialbu_post_id="
+                f"{publish_result.get('socialbu_post_id')}"
+            ),
+            "error": None,
+        }
+
+    error_detail = publish_result.get("error") or "publish failed"
+    sheets_helpers.update_cells(
+        sheet_id, tab_name, row_number,
+        {"status": "awaiting_approval", "approved_datetime": ""},
+        service=service,
+    )
+    _thread_reply(payload, f"Publish failed for `{row_id}`: {error_detail}")
+    _post_error(config, action, row_id, error_detail)
+    return {
+        "action": action,
+        "row_id": row_id,
+        "success": False,
+        "message": "Publish failed; status reverted to awaiting_approval",
+        "error": error_detail,
+    }
+
+
 def _handle_approve(payload: dict, config: Any, row_id: str) -> dict:
     sheet_id, tab_name, service, row_number, row = _find_row(config, row_id)
     if row is None:
@@ -173,45 +233,10 @@ def _handle_approve(payload: dict, config: Any, row_id: str) -> dict:
     row["status"] = "approved"
     row["approved_datetime"] = approved_at
 
-    publish_result = socialbu_publish.publish_row(row, config)
-
-    if publish_result.get("success"):
-        sheets_helpers.update_cells(
-            sheet_id, tab_name, row_number,
-            {
-                "status": "published",
-                "socialbu_post_id": publish_result.get("socialbu_post_id") or "",
-                "published_datetime": publish_result.get("published_datetime") or "",
-            },
-            service=service,
-        )
-        _add_reaction(payload, "white_check_mark")
-        return {
-            "action": "approve",
-            "row_id": row_id,
-            "success": True,
-            "message": (
-                f"Published. socialbu_post_id="
-                f"{publish_result.get('socialbu_post_id')}"
-            ),
-            "error": None,
-        }
-
-    error_detail = publish_result.get("error") or "publish failed"
-    sheets_helpers.update_cells(
-        sheet_id, tab_name, row_number,
-        {"status": "awaiting_approval", "approved_datetime": ""},
-        service=service,
+    return _publish_and_resolve(
+        payload, config, row_id,
+        sheet_id, tab_name, service, row_number, row,
     )
-    _thread_reply(payload, f"Publish failed for `{row_id}`: {error_detail}")
-    _post_error(config, "approve", row_id, error_detail)
-    return {
-        "action": "approve",
-        "row_id": row_id,
-        "success": False,
-        "message": "Publish failed; status reverted to awaiting_approval",
-        "error": error_detail,
-    }
 
 
 def _handle_reject(payload: dict, config: Any, row_id: str) -> dict:
@@ -250,10 +275,11 @@ def _handle_reject(payload: dict, config: Any, row_id: str) -> dict:
 
 
 def _handle_edit_caption(payload: dict, config: Any, row_id: str) -> dict:
-    # v1 limitation: capturing the threaded caption reply and writing it back
-    # to the sheet requires a separate Slack event listener (planned for v2).
-    # For now the thread instructs the owner to manually edit the caption in
-    # the queue; the status change here triggers the Critic to re-evaluate.
+    # The threaded caption reply is captured by the /slack/events endpoint
+    # (S44 Piece 2b), which commits the edit straight to publish — the row
+    # already passed the Critic, and a human edit at Gate 2 is trusted, so
+    # there is no re-review. Resetting to ``drafted`` here marks the row as
+    # in the edit flow so --edit-commit will accept the captured caption.
     sheet_id, tab_name, service, row_number, row = _find_row(config, row_id)
     if row is None:
         return _row_not_found("edit_caption", row_id)
@@ -271,8 +297,8 @@ def _handle_edit_caption(payload: dict, config: Any, row_id: str) -> dict:
     _thread_reply(
         payload,
         (
-            "Reply in this thread with the revised caption text. "
-            "I'll update the queue and re-run the Critic."
+            "Reply in this thread with the revised caption. "
+            "I'll apply it and publish — no re-review."
         ),
     )
     _add_reaction(payload, "pencil2")
@@ -400,6 +426,58 @@ def handle_action(payload: dict, config: Any) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Edit-commit (driven by the /slack/events endpoint via CLI)
+# ---------------------------------------------------------------------------
+
+def _edit_commit(config: Any, row_id: str, caption_text: str) -> dict:
+    """Commit a captured caption edit: drafted -> approved -> publish.
+
+    Invoked by the Slack events endpoint after it captures a threaded caption
+    reply. The row must currently be at ``drafted`` (the state Edit Caption
+    set); any other status is refused so a caption can't be force-committed
+    onto a row outside the edit flow. The Critic is intentionally bypassed —
+    the row already passed it and the human edit at Gate 2 is trusted.
+    """
+    sheet_id, tab_name, service, row_number, row = _find_row(config, row_id)
+    if row is None:
+        return _row_not_found("edit_commit", row_id)
+
+    status = (row.get("status") or "").strip()
+    if status != "drafted":
+        return {
+            "action": "edit_commit",
+            "row_id": row_id,
+            "success": False,
+            "message": (
+                f"status is {status!r}, not 'drafted'; refusing to commit "
+                f"caption edit"
+            ),
+            "error": "Row not in edit flow",
+        }
+
+    approved_at = _now_iso()
+    sheets_helpers.update_cells(
+        sheet_id, tab_name, row_number,
+        {
+            "caption": caption_text,
+            "status": "approved",
+            "approved_datetime": approved_at,
+        },
+        service=service,
+    )
+
+    row["caption"] = caption_text
+    row["status"] = "approved"
+    row["approved_datetime"] = approved_at
+
+    return _publish_and_resolve(
+        {}, config, row_id,
+        sheet_id, tab_name, service, row_number, row,
+        action="edit_commit",
+    )
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -410,10 +488,27 @@ def _cli() -> int:
         description="Route a Slack interactive payload (block_actions) "
                     "to the matching approval handler.",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
         "--payload",
-        required=True,
         help="Slack block_actions payload as a JSON string",
+    )
+    mode.add_argument(
+        "--edit-commit",
+        action="store_true",
+        help="commit a captured caption edit (status drafted -> approved) "
+             "and publish via the shared helper; requires --row-id and "
+             "--caption-text",
+    )
+    parser.add_argument(
+        "--row-id",
+        default=None,
+        help="row_id for --edit-commit",
+    )
+    parser.add_argument(
+        "--caption-text",
+        default=None,
+        help="revised caption text for --edit-commit",
     )
     parser.add_argument(
         "--dry-run",
@@ -423,6 +518,28 @@ def _cli() -> int:
     )
     args = parser.parse_args()
 
+    project_root = Path(__file__).resolve().parent.parent
+    config_path = os.environ.get("BUSINESS_CONFIG_PATH") or str(
+        project_root / "business_config_tes_rentals.yaml"
+    )
+
+    from tools.config_loader import load_config
+
+    if args.edit_commit:
+        if not args.row_id or args.caption_text is None:
+            print(json.dumps(
+                {
+                    "success": False,
+                    "error": "--edit-commit requires --row-id and --caption-text",
+                },
+                indent=2,
+            ))
+            return 1
+        config = load_config(config_path)
+        result = _edit_commit(config, args.row_id, args.caption_text)
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("success") else 1
+
     try:
         payload = json.loads(args.payload)
     except ValueError as exc:
@@ -431,13 +548,6 @@ def _cli() -> int:
             indent=2,
         ))
         return 1
-
-    project_root = Path(__file__).resolve().parent.parent
-    config_path = os.environ.get("BUSINESS_CONFIG_PATH") or str(
-        project_root / "business_config_tes_rentals.yaml"
-    )
-
-    from tools.config_loader import load_config
 
     config = load_config(config_path)
 
