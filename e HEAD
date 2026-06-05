@@ -1,0 +1,15 @@
+[33m2a835d2[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mevals/critic-variance-harness[m[33m, [m[1;31morigin/evals/critic-variance-harness[m[33m)[m 4B (tests): cover infographic branch in drafter generate_media
+[33m9c83411[m 4A: route image2_generated to infographic branch in drafter generate_media
+[33mdff6092[m 3B (tests): cover image2_generated routing in strategist
+[33m30e83d4[m 3A: route no-focus equipment rows to image2_generated (infographic path)
+[33mc3b53e6[m 2B (tests): cover brand_visuals.colors role tokens in config_loader test
+[33m26b8f32[m 1B (tests): cover tools/infographic_generator.py — fully mocked, no credits
+[33m3e75d34[m 1A: add tools/infographic_generator.py — Gemini "Nano Banana 2" text-to-image
+[33m4fce2a6[m S40 (tests): cover Strategist #system-health summary + executor async route
+[33mac5989c[m S40: convert /run/strategist to async/202 + add #system-health summary (single-exit wrapper); executor route + strategist agent
+[33mb6c02e5[m S39: make _check raise under pytest (Finding 1) + skip live drafter_dry_run under pytest (Finding 2); pin pytest
+[33m2cb7b43[m S38: tests for review-aware creative-hook overlap exception (critic B11 + drafter validate)
+[33m8768d8c[m S38: review-aware creative-hook overlap (drafter validate + critic B11) — allow excerpt-sourced overlap
+[33m63b2cfe[m S38: tests for B8 review-content flat-500 floor
+[33md5dad14[m S38: B8 review-content caption floor 500 (flat, media-format conditional); drafter target in lockstep
+[33m09f203c[m S38: add B7 6-word boundary test locking the ->6 threshold
