@@ -342,6 +342,102 @@ def test_media_image_url_helper(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Video-row media branch (1ee18496): link section instead of image block
+# ---------------------------------------------------------------------------
+
+def _video_link_sections(blocks: list[dict]) -> list[dict]:
+    """Section blocks carrying the video-media link ("View video" label)."""
+    out = []
+    for b in blocks:
+        if b.get("type") != "section":
+            continue
+        text = (b.get("text") or {}).get("text", "")
+        if "View video" in text:
+            out.append(b)
+    return out
+
+
+def _video_config(monkeypatch) -> Config:
+    """Config + env that make _media_image_url return a real signed URL."""
+    monkeypatch.setenv("MEDIA_URL_SECRET", "test-secret")
+    return _make_config(approval={"media_base_url": "https://executor.tessys.org"})
+
+
+def test_video_row_links_no_image_block(monkeypatch):
+    config = _video_config(monkeypatch)
+    row = _base_row(media_format_used="creatomate_video")
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    # No image block at all for a video row.
+    assert _image_blocks(blocks) == []
+
+    # Exactly one section carries the video link, in mrkdwn angle-bracket form.
+    links = _video_link_sections(blocks)
+    assert len(links) == 1
+    link_text = links[0]["text"]["text"]
+    assert "View video" in link_text
+    expected_url = approval_card._media_image_url(
+        row["row_id"], "https://executor.tessys.org",
+    )
+    assert f"<{expected_url}|View video>" in link_text
+    # mrkdwn link form, not Markdown.
+    assert "](" not in link_text
+
+
+def test_review_video_row_also_links(monkeypatch):
+    config = _video_config(monkeypatch)
+    row = _base_row(media_format_used="creatomate_review_video")
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    assert _image_blocks(blocks) == []
+    links = _video_link_sections(blocks)
+    assert len(links) == 1
+    assert "View video" in links[0]["text"]["text"]
+
+
+def test_image_row_keeps_image_block(monkeypatch):
+    config = _video_config(monkeypatch)
+    row = _base_row(media_format_used="creatomate_text_overlay")
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    images = _image_blocks(blocks)
+    assert len(images) == 1
+    expected_url = approval_card._media_image_url(
+        row["row_id"], "https://executor.tessys.org",
+    )
+    assert images[0]["image_url"] == expected_url
+    # No video-link section for an image row.
+    assert _video_link_sections(blocks) == []
+    assert "View video" not in _flatten_text(blocks)
+
+
+def test_empty_media_format_falls_through_to_image(monkeypatch):
+    # Legacy rows written before media_format_used existed: empty value must
+    # default to the pre-fix image block, not the video link.
+    config = _video_config(monkeypatch)
+    row = _base_row(media_format_used="")
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    assert len(_image_blocks(blocks)) == 1
+    assert _video_link_sections(blocks) == []
+
+
+def test_no_media_url_emits_neither_image_nor_video_link(monkeypatch):
+    # No media_url → no media block of any kind, even for a video format.
+    config = _video_config(monkeypatch)
+    row = _base_row(media_url="", media_format_used="creatomate_video")
+
+    _, blocks = approval_card.build_approval_blocks(row, config)
+
+    assert _image_blocks(blocks) == []
+    assert _video_link_sections(blocks) == []
+
+
+# ---------------------------------------------------------------------------
 # 7: post_approval_card calls Slack
 # ---------------------------------------------------------------------------
 
