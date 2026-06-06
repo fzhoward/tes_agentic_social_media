@@ -51,6 +51,12 @@ _MAX_WARNING_BLOCK_LEN = 2800
 
 _RESCHEDULE_TAG_RE = re.compile(r"\[RESCHEDULED:\s*(\d+)\]")
 
+# Media formats whose underlying asset is a video. Slack Block Kit "image"
+# blocks cannot render video, so these rows get a clickable link instead of
+# an inline preview. Mirrors agents/drafter.py::VIDEO_MEDIA_FORMATS — keep in
+# sync if that set changes.
+VIDEO_MEDIA_FORMATS = {"creatomate_video", "creatomate_review_video"}
+
 
 def _media_image_url(row_id: str, base_url: str) -> str | None:
     """Build the signed executor media URL for a row, or None if not buildable.
@@ -227,13 +233,25 @@ def build_approval_blocks(row: dict, config: Any) -> tuple[str, list[dict]]:
         blocks.append(critic_block)
 
     media_url_id = (row.get("media_url") or "").strip()
-    image_url = _media_image_url(row.get("row_id", ""), base_url) if media_url_id else None
-    if image_url:
-        blocks.append({
-            "type": "image",
-            "image_url": image_url,
-            "alt_text": f"Generated media for {row.get('row_id', '')}".strip(),
-        })
+    media_url = _media_image_url(row.get("row_id", ""), base_url) if media_url_id else None
+    media_format_used = (row.get("media_format_used") or "").strip()
+    is_video = media_format_used in VIDEO_MEDIA_FORMATS
+    if media_url:
+        if is_video:
+            # Slack image blocks cannot render video — link out instead.
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"🎬 *Video media:* <{media_url}|View video>",
+                },
+            })
+        else:
+            blocks.append({
+                "type": "image",
+                "image_url": media_url,
+                "alt_text": f"Generated media for {row.get('row_id', '')}".strip(),
+            })
 
     media_lines: list[str] = []
     media_format_used = (row.get("media_format_used") or "").strip()
