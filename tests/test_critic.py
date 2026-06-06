@@ -3038,3 +3038,96 @@ def test_c6_soft_fail_escalates_at_round_3(
     )
     assert output["verdict"] == "hard_fail", output
     assert "2 revision rounds" in output["notes"]
+
+
+# --- Session 44: A3 vs G1 re-scope (catalog-grounded specs never A3) ---
+# A catalog-item spec claim that matches the catalog row must never land in
+# the A3 (hard_fail) bucket — it belongs to G1 (soft_fail) or G3. The re-scope
+# is prompt-only and lives in three coordinated places: the system rule #6,
+# the catalog-block label, and the checklist A3/G1 rows. These deterministic
+# assertions prove the wording is wired without spending API tokens.
+
+_CATALOG_TES_017_REDUCED: dict = {
+    critic.CAT_ITEM_ID: "TES-017",
+    critic.CAT_STATUS: "active",
+    critic.CAT_ITEM_NAME: "Excavator - 30K - ZX135",
+    critic.CAT_MODEL: "ZX 135",
+    critic.CAT_TAIL_SWING: "Reduced",
+}
+
+
+def _build_messages_with_catalog(
+    row: dict, catalog_item: dict | None,
+) -> tuple[str, str]:
+    """Helper: build (system_message, user_message) with a catalog item."""
+    return critic.build_critic_messages(
+        row=row,
+        catalog_item=catalog_item,
+        review_text="",
+        pre_check_failures=[],
+        pre_check_passed=[],
+        pre_check_warnings=[],
+        revision_round=1,
+        previous_critic_output=None,
+        critic_checklist="",
+        brand_voice="",
+        platform_style="",
+        cta_skill="",
+        content_types_skill="",
+    )
+
+
+def test_system_message_a3_scope_boundary_present(base_row) -> None:
+    """Rule #6 must state A3 does NOT cover catalog-item spec claims."""
+    system_msg = _build_system_message(base_row)
+    assert "A3 does NOT cover spec claims" in system_msg
+
+
+def test_system_message_catalog_specs_judged_under_g1(base_row) -> None:
+    """Rule #6 must route catalog spec claims to G1, not A3."""
+    system_msg = _build_system_message(base_row)
+    assert "judged under G1" in system_msg
+
+
+def test_catalog_block_label_rescoped(base_row) -> None:
+    """The catalog block label (in the user message) is the
+    authoritative-source wording, not the old '(for G1-G3 verification)'
+    string — and it only appears when a catalog item is passed."""
+    row = dict(base_row)
+    row[critic.CQ_FOCUS_EQUIPMENT] = "TES-017"
+    _system, user_msg = _build_messages_with_catalog(
+        row, _CATALOG_TES_017_REDUCED
+    )
+    assert "(for G1-G3 verification)" not in user_msg
+    assert "authoritative source for ALL spec claims" in user_msg
+
+    # No catalog item → no catalog block label at all.
+    _system_none, user_msg_none = _build_messages_with_catalog(base_row, None)
+    assert "authoritative source for ALL spec claims" not in user_msg_none
+
+
+def _read_critic_checklist() -> str:
+    """Read the committed critic_checklist skill from disk (repo root)."""
+    path = PROJECT_ROOT / "skills" / "critic_checklist.md"
+    return path.read_text(encoding="utf-8")
+
+
+def _checklist_row(checklist: str, check_id: str) -> str:
+    """Return the markdown table row for a given check ID (e.g. '| A3 |...')."""
+    for line in checklist.splitlines():
+        if line.startswith(f"| {check_id} |"):
+            return line
+    raise AssertionError(f"no checklist row found for {check_id!r}")
+
+
+def test_checklist_a3_rescoped_excludes_catalog_specs() -> None:
+    """A3 row carries the G1/G3 boundary and drops the old overlapping tail."""
+    a3 = _checklist_row(_read_critic_checklist(), "A3")
+    assert "those are judged under G1/G3" in a3
+    assert "or spec claims not supported by the catalog data." not in a3
+
+
+def test_checklist_g1_owns_all_catalog_spec_claims() -> None:
+    """G1 row claims ownership of ALL spec claims about a catalog item."""
+    g1 = _checklist_row(_read_critic_checklist(), "G1")
+    assert "This check — not A3 — owns ALL spec claims" in g1

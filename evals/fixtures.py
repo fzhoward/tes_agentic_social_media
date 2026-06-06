@@ -20,6 +20,9 @@ The four seed fixtures span:
      no obvious issues. Expected STABLE-PASS across the board.
   4. ``weak_generic`` — vague, low-specificity caption. Expected stable
      FAIL on at least C-family specificity checks.
+  5. ``zx135_reduced_tail_swing`` — equipment post with focus_equipment_id
+     set, catalog ``tail_swing="Reduced"``. The real A3-vs-G1 misfire case:
+     "reduced tail swing" is catalog-grounded. Expected STABLE-PASS on A3.
 
 Add new fixtures by appending to ``FIXTURES``. Keep them small — a few
 focused cases beat a sprawling list because each fixture costs K API
@@ -184,6 +187,43 @@ _CAPTION_WEAK_GENERIC = (
     "Call us anytime."
 )
 
+# --- Caption — ZX135 reduced-tail-swing, the A3 vs G1 misfire case ---
+# Real Content Queue caption that was terminally hard_failed on A3 for the
+# sentence "The ZX135 runs reduced tail swing", which is catalog-grounded
+# (TES-017 tail_swing = "Reduced"). G2/G3 passed in the same run. Frozen
+# here to verify A3 no longer fires after the re-scope. Do not edit phrasing.
+_CAPTION_ZX135_REDUCED_TAIL_SWING = (
+    "Digging near an existing structure changes everything about machine "
+    "selection.\n"
+    "\n"
+    "A standard excavator swings wide on a tight job.\n"
+    "\n"
+    "That tail swing can put you into a wall, a footer, or a fence line.\n"
+    "\n"
+    "The ZX135 runs reduced tail swing.\n"
+    "\n"
+    "You get full digging force without the clearance problem.\n"
+    "\n"
+    "Close quarters.\n"
+    "\n"
+    "23,380 lb bucket digging force. 19 ft 11 in of dig depth. 28 ft 7 in "
+    "of reach.\n"
+    "\n"
+    "That is a serious machine for serious footer and utility work.\n"
+    "\n"
+    "Hydraulic thumb and backfill blade are included.\n"
+    "\n"
+    "No upsizing to get the right setup.\n"
+    "\n"
+    "If you are working tight to a building, the machine has to fit the "
+    "constraint.\n"
+    "\n"
+    "Not the other way around.\n"
+    "\n"
+    "Tell us what you are working on. Call (904) 452-0888 and we will help "
+    "you confirm the right machine before you schedule."
+)
+
 
 def _make_row(
     row_id: str,
@@ -250,6 +290,24 @@ _CATALOG_KUBOTA_KX040: dict[str, Any] = {
     critic.CAT_CAPACITY: "0.13 cu yd",
     critic.CAT_HORSEPOWER: "",
     critic.CAT_TAIL_SWING: "zero",
+}
+
+# Catalog entry for TES-017 (Hitachi ZX135). Values verbatim from the live
+# Equipment_Catalog_TES_Rentals sheet. tail_swing="Reduced" is the field that
+# makes "reduced tail swing" a supported claim (must not A3-fail). The three
+# caption numbers (23,380 lb / 19 ft 11 in / 28 ft 7 in) match these spec
+# strings exactly so the deterministic G3 rounding check does not false-fire.
+_CATALOG_TES_017: dict[str, Any] = {
+    critic.CAT_ITEM_ID: "TES-017",
+    critic.CAT_STATUS: "active",
+    critic.CAT_ITEM_NAME: "Excavator - 30K - ZX135",
+    critic.CAT_MODEL: "ZX 135",
+    critic.CAT_WEIGHT: "30,500 lbs",
+    critic.CAT_DIG_DEPTH: "Dig Depth: 19' 11\"",
+    critic.CAT_REACH: "Reach: 28 ft 7 in",
+    critic.CAT_CAPACITY: "Digging Force: 23,380 lb bucket",
+    critic.CAT_HORSEPOWER: "100 HP",
+    critic.CAT_TAIL_SWING: "Reduced",
 }
 
 
@@ -346,6 +404,36 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         catalog_item=None,
         expected_stable_fail=frozenset({"C4"}),
+    ),
+    Fixture(
+        name="zx135_reduced_tail_swing",
+        description=(
+            "Equipment post (FB), focus_equipment_id=TES-017, catalog "
+            "tail_swing='Reduced'. The real A3-vs-G1 misfire case: "
+            "'reduced tail swing' is catalog-grounded and must NOT fire "
+            "A3 (hard_fail). Expected STABLE-PASS on A3."
+        ),
+        row=_make_row(
+            row_id="STR-ZX135-FB-01",
+            platform="facebook",
+            objective="lead_generation",
+            content_type="Equipment Spotlight / Product Feature",
+            focus_equipment_id="TES-017",
+            cta_type="call",
+            caption=_CAPTION_ZX135_REDUCED_TAIL_SWING,
+            creative_hook_text="Fit the constraint",
+            hook_text=(
+                "Digging near an existing structure changes everything "
+                "about machine selection."
+            ),
+            cta_text=(
+                "Tell us what you are working on. Call (904) 452-0888 and "
+                "we will help you confirm the right machine before you "
+                "schedule."
+            ),
+        ),
+        catalog_item=_CATALOG_TES_017,
+        expected_stable_pass=frozenset({"A3"}),
     ),
 )
 
