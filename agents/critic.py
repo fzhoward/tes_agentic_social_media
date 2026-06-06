@@ -1388,7 +1388,10 @@ def build_critic_messages(
     catalog_block = ""
     if catalog_item is not None:
         catalog_block = (
-            "\n# Catalog Item Record (for G1-G3 verification)\n\n"
+            "\n# Catalog Item Record (authoritative source for ALL spec "
+            "claims about this item — G1/G2/G3 verification; a spec claim "
+            "matching this record is supported and is never an A3 failure)"
+            "\n\n"
             f"```json\n{json.dumps(catalog_item, indent=2)}\n```\n"
         )
 
@@ -1447,7 +1450,15 @@ def build_critic_messages(
         "any rounding or inflation as G3.\n"
         "6. Social Proof fidelity: if a review is provided, the caption "
         "must not fabricate content beyond it. Flag fabricated quotes or "
-        "details as A3.\n"
+        "details as A3. A3 covers fabrication with no catalog basis "
+        "(invented stories, made-up statistics, or claims about equipment "
+        "that is not in the catalog at all). A3 does NOT cover spec claims "
+        "about a catalog item: any claim about a catalog item's specs, "
+        "dimensions, capacity, weight, features, or tail swing is judged "
+        "under G1 (and rounding under G3), never A3. A claim that matches "
+        "the catalog record — including a qualitative spec such as a "
+        "'reduced tail swing' machine when the catalog records that "
+        "attribute — is supported and must not be failed under A3 or G1.\n"
         "7. C4 (specificity) is conditional on focus_equipment_id. When the "
         "draft's focus_equipment_id is empty, do NOT fail C4 for the absence "
         "of a named machine model — the row has no featured equipment and "

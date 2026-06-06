@@ -47,7 +47,7 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 |----|-------|-----------|
 | A1 | **No pricing language.** The draft must not contain dollar signs, dollar amounts, price ranges, or relative pricing language ("affordable," "competitive," "budget-friendly," "cheap," "cheapest"). | Brand voice: Pricing Mention Rules |
 | A2 | **No emoji.** The draft must not contain any emoji characters. | Brand voice: Emoji Policy |
-| A3 | **No fabricated claims.** The draft must not contain fabricated customer stories, invented anecdotes, made-up statistics, or spec claims not supported by the catalog data. | Brand voice: Default Content Rules |
+| A3 | **No fabricated claims.** The draft must not contain fabricated customer stories, invented anecdotes, made-up statistics, or factual claims about equipment that is not present in the catalog at all. **Scope boundary:** A3 does NOT cover spec claims about a catalog item — those are judged under G1/G3. If a claim concerns a catalog item's specs, dimensions, capacity, weight, or features, evaluate it as G1 (does it match the catalog row?), never as A3. A claim that matches the catalog row (including a qualitative spec such as a "reduced tail swing" machine where the catalog records that attribute) is supported and must not be failed under A3 or G1. | Brand voice: Default Content Rules |
 | A4 | **No unsafe simplification.** The draft must not make any product, service, or equipment sound safer, easier, or more risk-free than it actually is. | Brand voice: Trust and Safety Rules |
 | A5 | **CTA matches objective.** A brand awareness post must not contain a conversion CTA (call, DM, click, visit, book, directions). A lead generation post must contain a call or DM CTA. | CTA Skill: CTA Type by Post Objective |
 | A6 | **No banned language.** The draft must not contain any phrase from the banned language list in the brand voice file. | Brand voice: Banned and Restricted Language |
@@ -115,7 +115,7 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 
 | ID | Check | Reference |
 |----|-------|-----------|
-| G1 | **Spec claims match catalog data.** Any specific claim about a catalog item (dimensions, capacity, weight, features, etc.) must match the value in the catalog sheet. If the catalog value is blank, the claim must be removed or flagged. | Catalog Schema Template |
+| G1 | **Spec claims match catalog data.** Any specific claim about a catalog item (dimensions, capacity, weight, features, tail swing, etc.) must match the value in the catalog sheet. This check — not A3 — owns ALL spec claims about a catalog item: a claim that matches the catalog passes; a claim that is wrong, inflated, or refers to a field that is blank in the catalog row is flagged here as G1 (soft_fail, revisable). Qualitative attributes count: if the caption calls a machine "reduced tail swing" and the catalog `tail_swing` value is "Reduced," that is a match and passes. Do not escalate a catalog spec problem to A3. | Catalog Schema Template |
 | G2 | **Item exists and is active.** The featured catalog item must have status "active" or "seasonal" in the catalog. Do not feature inactive or coming_soon items unless the Strategist explicitly assigned them. | Catalog Schema Template |
 | G3 | **No inflated or rounded specs.** Spec values must match the catalog exactly. Do not round "11,800 lbs" to "12,000 lbs" or "14.2 ft" to "15 ft." | Catalog Schema Template |
 
