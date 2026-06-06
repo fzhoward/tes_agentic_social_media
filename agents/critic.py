@@ -152,6 +152,8 @@ CTA_VERBS: tuple[str, ...] = (
     "stop",
     "swing",
     "send",
+    "see",
+    "drop",
 )
 
 # Match a CTA verb at the start of a clause. A clause begins at:

@@ -67,7 +67,7 @@ Not every CTA type fits every objective. These are the defaults.
 1. The CTA is always the last element of the caption. Nothing follows it.
 2. One CTA per post. Never stack multiple actions (e.g., "Call us or visit our website or DM us").
 3. The CTA must be direct. Use imperative phrasing: "Call us at..." or "Drop a comment...." not "Feel free to reach out if..."
-4. The CTA must name the action specifically. "Contact us" is too vague. "Call us at {{PHONE}}" is specific.
+4. The CTA must name the action specifically. "Contact us" or "Click link" is too vague. "Call us at {{PHONE}}" or "See full line up at" is specific. 
 5. For lead generation posts, the post must name the customer situation or problem before the CTA. Never lead with the ask.
 6. Do not use urgency language unless the post is about a genuinely time-limited situation (seasonal availability, event deadline, limited slots).
 
@@ -96,7 +96,7 @@ Structure: [Where to find the link] + [What they'll get]
 On platforms where links go in the first comment (FB/IG), the CTA must direct the reader there.
 
 Weak: "Check the link."
-Strong: "Full breakdown in the first comment."
+Strong: "Full breakdown in the first comment." or "See full line up at"
 
 ### Comment CTA Phrasing
 
