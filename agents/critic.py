@@ -179,6 +179,43 @@ SPEC_NUMBER_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+# D7 — North American phone numbers in the post body (GBP "phone stuffing"
+# policy). GBP's own detector is permissive on separators, so this is too: it
+# matches an optional leading country code (`1`/`+1`) then a 3-3-4 grouping
+# with separators `()`, space, `.`, or `-` between groups, OR a contiguous
+# 10-digit run.
+#   Intended matches:
+#     (904) 452-0888   904-452-0888   904.452.0888   9044520888
+#     +1 904 452 0888  1-904-452-0888
+# Tradeoff (deliberate, GBP-only): the bare-10-digit alternative can in theory
+# collide with a 10-digit spec number, but such numbers do not occur in this
+# catalog (weights/dimensions are <= 6 digits and carry unit tokens) and a
+# false positive here is a soft annoyance while a published policy violation is
+# not. We therefore prefer false positives toward phone detection on GBP. The
+# spec-number guard below (negative lookahead for an adjacent unit token) keeps
+# grouped weights like "10,847 lbs" from ever reaching this pattern.
+PHONE_RE = re.compile(
+    r"(?:\+?1[\s.\-]?)?"            # optional country code
+    r"(?:"
+    r"\(\d{3}\)[\s.\-]?\d{3}[\s.\-]?\d{4}"   # (904) 452-0888
+    r"|\d{3}[\s.\-]\d{3}[\s.\-]\d{4}"        # 904-452-0888 / 904.452.0888 / 904 452 0888
+    r"|\d{10}"                                # 9044520888
+    r")"
+    r"(?!\s*(?:lbs?|pounds?|tons?|ft|feet|in|inch(?:es)?|hp|hr|hrs|gal|psi))",
+    flags=re.IGNORECASE,
+)
+
+# D7 — street address line in the post body (GBP contact-info policy). A
+# leading street number, one or more words, and a common street-type token
+# (abbreviation dot optional, case-insensitive).
+#   Intended match: "2000 N Temple Ave"
+STREET_ADDRESS_RE = re.compile(
+    r"\b\d{1,6}\s+(?:[A-Za-z0-9.]+\s+){0,4}"
+    r"(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|"
+    r"Way|Ct|Court|Hwy|Highway|Pkwy|Parkway|Terrace|Ter|Pl|Place)\b\.?",
+    flags=re.IGNORECASE,
+)
+
 
 # --- Content Queue column names ---
 
@@ -254,6 +291,7 @@ CATEGORY_BY_CHECK: dict[str, str] = {
     # D — platform
     "D1": "platform", "D2": "platform", "D3": "platform",
     "D4": "platform", "D5": "platform", "D6": "platform",
+    "D7": "platform",
     # E — CTA
     "E1": "cta", "E2": "cta", "E3": "cta", "E4": "cta", "E5": "cta",
     # F — objective alignment
@@ -278,6 +316,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
     "C7": "warning",
     "D1": "soft_fail", "D2": "soft_fail", "D3": "soft_fail",
     "D4": "soft_fail", "D5": "soft_fail", "D6": "soft_fail",
+    "D7": "hard_fail",
     "E1": "soft_fail", "E2": "soft_fail", "E3": "soft_fail",
     "E4": "soft_fail", "E5": "soft_fail",
     "F1": "warning", "F2": "warning", "F3": "warning",
@@ -289,7 +328,7 @@ VERDICT_LEVEL_BY_CHECK: dict[str, str] = {
 # the LLM's responsibility unless overridden.
 PRE_CHECK_IDS: tuple[str, ...] = (
     "A1", "A2", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B11",
-    "D1", "D5", "D6", "E1", "E2", "E3", "G3",
+    "D1", "D5", "D6", "D7", "E1", "E2", "E3", "G3",
 )
 
 ALL_CHECK_IDS: tuple[str, ...] = tuple(
@@ -901,6 +940,65 @@ def check_gbp_button(
     return failures
 
 
+def check_no_contact_info(caption: str, platform: str) -> list[dict]:
+    """D7 — GBP post body must not contain a phone number or street address.
+
+    Google Business Profile rejects posts that put contact info in the body
+    ("phone stuffing" content policy). This is GBP-only: Facebook/Instagram
+    have no equivalent prohibition, so we early-return for them. Deterministic
+    regex gate (hard_fail), modeled on check_pricing for body scanning and on
+    check_gbp_button for platform gating.
+
+    The phone CTA is preserved structurally by the publisher attaching a GBP
+    CALL button (verified listing number, no digits in text); the address is
+    shown on the listing itself.
+    """
+    if (platform or "").strip().lower() != "gbp":
+        return []
+    failures: list[dict] = []
+    if not caption:
+        return failures
+
+    phone_match = PHONE_RE.search(caption)
+    if phone_match:
+        snippet = phone_match.group(0).strip()
+        failures.append(_make_failure(
+            check_id="D7",
+            location=f"caption — phone number {snippet!r}",
+            description=(
+                f"Phone number {snippet!r} appears in the GBP post body. "
+                f"Google rejects posts with a phone number in the body "
+                f"(phone-stuffing content policy)."
+            ),
+            fix_instruction=(
+                f"Remove the phone number {snippet!r} from the post body. The "
+                f"phone reaches customers via the GBP CALL button, which uses "
+                f"the verified listing number — do not type any phone number "
+                f"in the caption. Express the call CTA verbally instead "
+                f"(e.g., 'Call for availability')."
+            ),
+        ))
+
+    address_match = STREET_ADDRESS_RE.search(caption)
+    if address_match:
+        snippet = address_match.group(0).strip()
+        failures.append(_make_failure(
+            check_id="D7",
+            location=f"caption — street address {snippet!r}",
+            description=(
+                f"Street address {snippet!r} appears in the GBP post body. "
+                f"Contact info (address) is not allowed in post content."
+            ),
+            fix_instruction=(
+                f"Remove the street address {snippet!r} from the body. The "
+                f"business address is shown on the GBP listing itself and "
+                f"must not be duplicated in post content."
+            ),
+        ))
+
+    return failures
+
+
 def check_one_cta(cta_text: str, caption: str = "") -> list[dict]:
     """E2 — count CTA-like phrases.
 
@@ -1255,6 +1353,7 @@ def run_deterministic_checks(
     ))
     failures.extend(check_caption_length(caption, platform))
     failures.extend(check_gbp_button(platform, cta_type, booking_url, website_url))
+    failures.extend(check_no_contact_info(caption, platform))
     failures.extend(check_one_cta(
         cta_text=str(row.get(CQ_CTA_TEXT, "") or ""),
         caption=caption,
