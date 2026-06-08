@@ -717,6 +717,90 @@ def test_gbp_button_non_gbp_platform_no_check() -> None:
     assert critic.check_gbp_button("instagram", "save") == []
 
 
+# --- D7 — GBP no-contact-info (phone + address in body) ---
+
+def test_d7_flags_phone_in_gbp_body() -> None:
+    """D7 — a phone number in the GBP post body is a hard_fail."""
+    failures = critic.check_no_contact_info(
+        "Reserve the ZX135 today. Call us at (904) 452-0888.", "gbp"
+    )
+    d7 = [f for f in failures if f["check_id"] == "D7"]
+    assert len(d7) == 1, failures
+    assert d7[0]["verdict_level"] == "hard_fail", d7
+    assert "(904) 452-0888" in d7[0]["description"], d7
+
+
+def test_d7_catches_each_phone_punctuation_variant() -> None:
+    """D7 — every punctuation variant from the spec is caught on GBP."""
+    variants = (
+        "(904) 452-0888",
+        "904-452-0888",
+        "904.452.0888",
+        "9044520888",
+        "+1 904 452 0888",
+        "1-904-452-0888",
+    )
+    for phone in variants:
+        failures = critic.check_no_contact_info(
+            f"Call us today at {phone} for availability.", "gbp"
+        )
+        assert any(f["check_id"] == "D7" for f in failures), phone
+
+
+def test_d7_flags_street_address_in_gbp_body() -> None:
+    """D7 — a street address in the GBP post body is flagged."""
+    failures = critic.check_no_contact_info(
+        "Swing by 2000 N Temple Ave to grab the rental.", "gbp"
+    )
+    d7 = [f for f in failures if f["check_id"] == "D7"]
+    assert len(d7) == 1, failures
+    assert d7[0]["verdict_level"] == "hard_fail", d7
+    assert "2000 N Temple Ave" in d7[0]["description"], d7
+
+
+def test_d7_flags_both_phone_and_address() -> None:
+    """D7 — a caption with BOTH a phone and an address produces >= 2 D7
+    failures (one per contact-info type)."""
+    failures = critic.check_no_contact_info(
+        "Call (904) 452-0888 or visit us at 2000 N Temple Ave today.", "gbp"
+    )
+    d7 = [f for f in failures if f["check_id"] == "D7"]
+    assert len(d7) >= 2, failures
+
+
+def test_d7_non_gbp_platform_skips_check() -> None:
+    """D7 is GBP-only — the same phone string produces zero failures on
+    Facebook and Instagram."""
+    caption = "Call us at (904) 452-0888 for availability."
+    assert critic.check_no_contact_info(caption, "facebook") == []
+    assert critic.check_no_contact_info(caption, "instagram") == []
+
+
+def test_d7_clean_gbp_caption_passes() -> None:
+    """D7 — a GBP caption with no phone/address produces no failures."""
+    caption = (
+        "The ZX135 excavator is ready for your next job. Call for "
+        "availability and we will line up the right machine."
+    )
+    assert critic.check_no_contact_info(caption, "gbp") == []
+
+
+def test_d7_does_not_false_fire_on_spec_numbers() -> None:
+    """D7 — spec-heavy GBP captions (weights, dimensions, HP) must not
+    trip the phone regex on their grouped numbers."""
+    caption = (
+        "This machine lifts 10,847 lbs, weighs 8,267 lb, reaches "
+        "11 feet 7 inches, and runs a 36 HP engine. Call for availability."
+    )
+    assert critic.check_no_contact_info(caption, "gbp") == []
+
+
+def test_d7_registered_in_precheck_ids_and_verdict_map() -> None:
+    """D7 is registered as a deterministic pre-check at hard_fail tier."""
+    assert "D7" in critic.PRE_CHECK_IDS
+    assert critic.VERDICT_LEVEL_BY_CHECK["D7"] == "hard_fail"
+
+
 def test_one_cta_flags_multiple_verbs_in_cta_text() -> None:
     """E2 — two distinct CTA verbs in cta_text is flagged."""
     cta_text = "Save this post then call us to book a rental."
