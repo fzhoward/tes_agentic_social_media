@@ -170,6 +170,57 @@ def test_build_payload_gbp(config):
 
 
 # ---------------------------------------------------------------------------
+# GBP CTA button (options[call_to_action]) — shape confirmed via live probe
+# ---------------------------------------------------------------------------
+
+def test_build_payload_gbp_call_button(config):
+    """GBP row with cta_type=call attaches a CALL button and no URL."""
+    row = _base_row(platform="gbp", media_url="", cta_type="call")
+    data, _ = socialbu_publish._build_multipart_payload(row, config)
+    assert data["options[call_to_action]"] == "CALL"
+    # CALL uses the verified listing number — no URL field.
+    assert "options[call_to_action_url]" not in data
+
+
+def test_build_payload_gbp_learn_more_includes_url(config):
+    """GBP row with cta_type=visit maps to LEARN_MORE and pulls a URL from
+    config (contact.booking_url or contact.website)."""
+    row = _base_row(platform="gbp", media_url="", cta_type="visit")
+    data, _ = socialbu_publish._build_multipart_payload(row, config)
+    assert data["options[call_to_action]"] == "LEARN_MORE"
+    assert data["options[call_to_action_url]"].startswith("http")
+
+
+def test_build_payload_gbp_no_cta_type_no_button(config):
+    """GBP row with an unmappable/empty cta_type attaches no button field."""
+    row = _base_row(platform="gbp", media_url="", cta_type="dm")
+    data, _ = socialbu_publish._build_multipart_payload(row, config)
+    assert "options[call_to_action]" not in data
+
+
+def test_build_payload_facebook_no_cta_button(config):
+    """FB rows are unaffected — no CTA-button field even with cta_type=call."""
+    row = _base_row(platform="facebook", cta_type="call", media_url="")
+    data, _ = socialbu_publish._build_multipart_payload(row, config)
+    assert "options[call_to_action]" not in data
+    assert "options[call_to_action_url]" not in data
+
+
+def test_build_payload_instagram_no_cta_button(config):
+    """IG rows are unaffected by the GBP CTA-button logic."""
+    # Patch media download since IG requires media.
+    with patch("tools.socialbu_publish._download_media") as mock_dl:
+        mock_dl.return_value = (b"fake-bytes", "image/jpeg")
+        row = _base_row(
+            platform="instagram",
+            cta_type="call",
+            media_url="https://example.com/photo.jpg",
+        )
+        data, _ = socialbu_publish._build_multipart_payload(row, config)
+    assert "options[call_to_action]" not in data
+
+
+# ---------------------------------------------------------------------------
 # 12-15: validation
 # ---------------------------------------------------------------------------
 
