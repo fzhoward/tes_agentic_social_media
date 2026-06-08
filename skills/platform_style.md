@@ -172,6 +172,8 @@ GBP posts support one CTA button. The button type determines the label and behav
 
 Only one button per post. The Strategist or Drafter selects the button type based on the post objective and CTA type assigned.
 
+Phone numbers must NOT appear in the GBP post body (Google content policy — "phone stuffing"). Use the CALL button, which dials the verified listing number with no number in the text. Street addresses must not appear in the body either — the address is on the listing.
+
 ### Hashtag Behavior
 
 - GBP does not use hashtags. They render as plain text and have no discovery function.

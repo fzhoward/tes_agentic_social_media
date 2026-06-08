@@ -158,6 +158,7 @@ The body must not repeat the hook, resolve the hook too abruptly, or introduce a
 * Reading level: roughly 7th-8th grade.  
 * One clear CTA.  
 * One core point per post.
+* **Never include a phone number or street address in the GBP post body.** Google rejects posts that do (phone-stuffing content policy). The phone number is delivered by the CALL button using the verified listing number; the address is shown on the listing. State call-to-action intent in words (e.g. "Call for availability") WITHOUT typing the number.
 
 # **Voice and Content Rules**
 
@@ -340,6 +341,7 @@ Quality check values must reflect the actual post. Do not set all booleans to tr
 * If a hook skill is used upstream, the final assembly step should prepend the selected hook with a blank line before the GBP body.  
 * If the hook skill fails, do not ask this GBP skill to generate a hook unless the implementation explicitly overrides the default.  
 * If required CTA destination is missing, generate the post only when the desired action can still be stated without a link or phone number. Flag the missing destination in quality notes.  
+* When the desired action on GBP is a phone call, the CTA is realized by the CALL button (not by a number in the body). The button dials the verified listing number, so no phone digits ever appear in the post text.  
 * If required offer, event, or proof details are missing for those post types, select a different pattern or flag the post as failing.
 
 # **Changelog**
