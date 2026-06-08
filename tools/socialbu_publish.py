@@ -36,6 +36,31 @@ _HTTP_TIMEOUT = 30
 
 _DRIVE_DOWNLOAD_URL_TEMPLATE = "https://lh3.googleusercontent.com/d/{file_id}"
 
+# GBP CTA button routing. Mirrors agents.critic.check_gbp_button's
+# cta_to_button map: the Drafter encodes button intent via cta_type, and the
+# publisher attaches the matching GBP CTA button so the verified listing phone
+# is used (no phone number in the post body — see Critic check D7).
+#
+# Confirmed via probe against the live SocialBu API (and SocialBu's OpenAPI
+# spec, schema GoogleBusinessProfilePostRequest): the button is set with the
+# multipart form field ``options[call_to_action]`` = <TYPE>, and URL-requiring
+# buttons add ``options[call_to_action_url]`` = <url>. CALL needs no URL (it
+# dials the verified listing number).
+#
+# NOTE: SocialBu's documented call_to_action enum is BOOK / ORDER / SHOP /
+# LEARN_MORE / SIGN_UP / CALL — it does NOT include GET_DIRECTIONS. The
+# ``directions`` mapping below is kept for parity with the Critic's map, but
+# SocialBu may silently ignore GET_DIRECTIONS. CALL (the case this work
+# targets) is confirmed working.
+_GBP_CTA_TO_BUTTON: dict[str, str] = {
+    "call": "CALL",
+    "visit": "LEARN_MORE",
+    "click": "LEARN_MORE",
+    "book": "BOOK",
+    "directions": "GET_DIRECTIONS",
+}
+_GBP_BUTTONS_REQUIRING_URL: set[str] = {"LEARN_MORE", "BOOK", "ORDER", "SIGN_UP"}
+
 
 def _get_account_id(platform: str, config: Any) -> int:
     """Map a Content Queue platform name to its SocialBu integer account ID.
@@ -179,6 +204,23 @@ def _build_multipart_payload(
     first_comment = (row.get("first_comment") or "").strip()
     if first_comment:
         data["first_comment"] = first_comment
+
+    # GBP-only: attach a CTA button so the call-to-action is delivered
+    # structurally (the verified listing phone for CALL) rather than as a
+    # phone number in the post body. FB/IG payloads are unaffected.
+    if (platform or "").strip().lower() == "gbp":
+        cta_type = (row.get("cta_type") or "").strip().lower()
+        button = _GBP_CTA_TO_BUTTON.get(cta_type)
+        if button:
+            data["options[call_to_action]"] = button
+            if button in _GBP_BUTTONS_REQUIRING_URL:
+                url = (
+                    config.get("contact.booking_url", "")
+                    or config.get("contact.website", "")
+                    or ""
+                ).strip()
+                if url:
+                    data["options[call_to_action_url]"] = url
 
     files: dict[str, tuple[str, bytes, str]] = {}
 
