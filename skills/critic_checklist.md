@@ -92,7 +92,7 @@ These checks trigger an immediate hard_fail on the first violation. They are nev
 | D4 | **First comment field populated** (for link posts). The first_comment output field must contain the URL with a short prefix. | FB/IG Post Framework: Output Format |
 | D5 | **GBP button type valid.** If a GBP CTA button is specified, it must be one of: CALL, LEARN_MORE, BOOK, ORDER, GET_DIRECTIONS, SIGN_UP. | Platform Style Skill: CTA Button Types |
 | D6 | **GBP button URL provided** (when required). LEARN_MORE, BOOK, ORDER, and SIGN_UP require a URL. CALL and GET_DIRECTIONS do not. | Platform Style Skill: CTA Button Types |
-| D7 | **No phone number or street address in the GBP post body** (Google "phone stuffing" content policy). Deterministic, **hard_fail**, GBP-only. The phone reaches customers via the CALL button (verified listing number, no digits in text); the address is shown on the listing itself. | Platform Style Skill: CTA Button Types |
+| D7 | **No phone number or street address in the GBP post body** (Google "phone stuffing" content policy). Deterministic, GBP-only. The phone reaches customers via the CALL button (verified listing number, no digits in text); the address is shown on the listing itself. | Platform Style Skill: CTA Button Types |
 
 ### E. CTA Rules (Soft Fail unless noted)
 

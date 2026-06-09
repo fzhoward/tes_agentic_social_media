@@ -21,7 +21,7 @@ Document the technical constraints, content behaviors, and publishing mechanics 
 
 | Element | Target Length | Truncation Behavior |
 |---------|-------|-------------------|
-| Post caption | 500-1500 characters (platform limit: 63,206 chars) | Truncated at ~477 characters in feed with "See more" link. First 1-2 lines must carry the hook. |
+| Post caption | 450-1500 characters (platform limit: 63,206 chars) | Truncated at ~477 characters in feed with "See more" link. First 1-2 lines must carry the hook. |
 | First comment | 200 characters | Not truncated in most views. |
 | Link preview title | ~88 characters | Truncated with ellipsis. |
 | Link preview description | ~300 characters | Truncated. |
@@ -66,7 +66,7 @@ Facebook Pages support: text, photo, video, link (with preview), carousel, event
 
 | Element | Target Length | Truncation Behavior |
 |---------|-------|-------------------|
-| Caption | 800-1500 characters (platform limit: 2,200 chars)| Truncated at ~125 characters in feed with "...more" link. First line must carry the hook. |
+| Caption | 700-1500 characters (platform limit: 2,200 chars)| Truncated at ~125 characters in feed with "...more" link. First line must carry the hook. |
 | First comment | 300 characters | Not truncated. |
 | Bio link | 1 URL in bio (or link-in-bio tool) | N/A |
 
