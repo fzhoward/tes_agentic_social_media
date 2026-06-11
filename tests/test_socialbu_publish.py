@@ -378,12 +378,62 @@ def test_payload_video_format(mock_dl, config):
 
 
 # ---------------------------------------------------------------------------
-# 22: drive ID is converted to lh3 URL
+# 22: drive ID is converted to a uc?export=download URL (serves images + video)
 # ---------------------------------------------------------------------------
 
 def test_drive_url_conversion():
     out = socialbu_publish._resolve_media_url("1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D")
-    assert out == "https://lh3.googleusercontent.com/d/1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
+    assert out == "https://drive.google.com/uc?export=download&id=1ABCdefGhi_J4MNepG5q39CmjBRcY0MD4D"
+
+
+def test_resolve_media_url_bare_drive_id_uses_uc_export_download():
+    """Bare Drive ID → uc?export=download form (the lh3 image-only CDN 404s
+    on video file IDs — see STR-20260611-IG-01)."""
+    out = socialbu_publish._resolve_media_url("1XKXuC8qbVtB5qquvNjqVFzf5beZPArmZ")
+    assert out == (
+        "https://drive.google.com/uc?export=download&id="
+        "1XKXuC8qbVtB5qquvNjqVFzf5beZPArmZ"
+    )
+    assert "lh3.googleusercontent.com" not in out
+
+
+def test_resolve_media_url_passes_full_url_through():
+    """A value already starting with http(s) is returned verbatim."""
+    url = "https://cdn.example.com/clip.mp4"
+    assert socialbu_publish._resolve_media_url(url) == url
+
+
+def test_resolve_media_url_empty_input():
+    """Empty / whitespace-only input resolves to an empty string."""
+    assert socialbu_publish._resolve_media_url("") == ""
+    assert socialbu_publish._resolve_media_url("   ") == ""
+
+
+@patch("tools.socialbu_publish._download_media")
+def test_build_payload_instagram_video_from_bare_drive_id(mock_dl, config):
+    """Regression for STR-20260611-IG-01: a Social Proof IG video row whose
+    media_url is a bare Drive ID builds an .mp4/video/mp4 multipart attachment.
+    This is the exact path that threw before the uc?export=download fix."""
+    mock_dl.return_value = (b"<fake mp4 bytes>", "video/mp4")
+    row = _base_row(
+        row_id="STR-20260611-IG-01",
+        platform="instagram",
+        media_url="1XKXuC8qbVtB5qquvNjqVFzf5beZPArmZ",
+        media_format_used="creatomate_video",
+    )
+    data, files = socialbu_publish._build_multipart_payload(row, config)
+    assert data["accounts[]"] == "173904"
+    assert "attachments" in files
+    filename, body, mime = files["attachments"]
+    assert filename.endswith(".mp4")
+    assert filename == "STR-20260611-IG-01.mp4"
+    assert mime == "video/mp4"
+    # The bare Drive ID was resolved to the uc?export=download URL, not lh3.
+    resolved = mock_dl.call_args.args[0]
+    assert resolved == (
+        "https://drive.google.com/uc?export=download&id="
+        "1XKXuC8qbVtB5qquvNjqVFzf5beZPArmZ"
+    )
 
 
 # ---------------------------------------------------------------------------
