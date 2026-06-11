@@ -439,3 +439,274 @@ def test_media_filename_png():
 
 def test_media_filename_unknown():
     assert socialbu_publish._media_filename("STR-001", "application/octet-stream") == "STR-001.jpg"
+
+
+# ---------------------------------------------------------------------------
+# 29+: update_catalog_usage — catalog post_count/last_posted write-back
+# ---------------------------------------------------------------------------
+
+def _stub_config(spec_sheet_id: str = "cat-sheet-id"):
+    """Config stub whose .get('catalog.spec_sheet_id', '') returns spec_sheet_id."""
+    cfg = MagicMock()
+
+    def _get(key, default=None):
+        if key == "catalog.spec_sheet_id":
+            return spec_sheet_id
+        return default
+
+    cfg.get.side_effect = _get
+    return cfg
+
+
+def _stub_service(tab: str = "Catalog"):
+    """Sheets service mock whose spreadsheets().get(...).execute() yields one tab."""
+    svc = MagicMock()
+    svc.spreadsheets.return_value.get.return_value.execute.return_value = {
+        "sheets": [{"properties": {"title": tab}}]
+    }
+    return svc
+
+
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_no_focus_id_noops(mock_find, mock_update, capsys):
+    for fid in ("", "   "):
+        result = socialbu_publish.update_catalog_usage(
+            focus_equipment_id=fid,
+            published_datetime="2026-06-02T09:00:00+00:00",
+            config=_stub_config(),
+            service=MagicMock(),
+        )
+        assert result is False
+    mock_find.assert_not_called()
+    mock_update.assert_not_called()
+    # No-focus is normal — must not log a warning.
+    assert "WARN" not in capsys.readouterr().err
+
+
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_empty_config_sheet_id(mock_find, mock_update, capsys):
+    result = socialbu_publish.update_catalog_usage(
+        focus_equipment_id="TES-004",
+        published_datetime="2026-06-02T09:00:00+00:00",
+        config=_stub_config(spec_sheet_id=""),
+        service=MagicMock(),
+    )
+    assert result is False
+    mock_find.assert_not_called()
+    mock_update.assert_not_called()
+    assert "WARN" in capsys.readouterr().err
+
+
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_item_not_found(mock_find, mock_update, capsys):
+    mock_find.return_value = []
+    result = socialbu_publish.update_catalog_usage(
+        focus_equipment_id="TES-999",
+        published_datetime="2026-06-02T09:00:00+00:00",
+        config=_stub_config(),
+        service=_stub_service(),
+    )
+    assert result is False
+    mock_update.assert_not_called()
+    assert "WARN" in capsys.readouterr().err
+
+
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_happy_path_increments(mock_find, mock_update):
+    mock_find.return_value = [(7, {"item_id": "TES-004", "post_count": "3"})]
+    result = socialbu_publish.update_catalog_usage(
+        focus_equipment_id="TES-004",
+        published_datetime="2026-06-02T09:00:00+00:00",
+        config=_stub_config(spec_sheet_id="cat-sheet-id"),
+        service=_stub_service(tab="Catalog"),
+    )
+    assert result is True
+
+    # Looked up by item_id against the resolved catalog sheet/tab.
+    _, find_kwargs = mock_find.call_args
+    find_args = mock_find.call_args.args
+    assert "TES-004" in find_args
+    assert "item_id" in find_args
+
+    mock_update.assert_called_once()
+    _, kwargs = mock_update.call_args
+    assert kwargs["spreadsheet_id"] == "cat-sheet-id"
+    assert kwargs["tab_name"] == "Catalog"
+    assert kwargs["row_number"] == 7
+    assert kwargs["col_updates"] == {
+        "post_count": "4",
+        "last_posted": "2026-06-02T09:00:00+00:00",
+    }
+    assert kwargs["value_input_option"] == "RAW"
+
+
+@pytest.mark.parametrize("raw_count", ["", "   ", "n/a"])
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_blank_count_treated_as_zero(
+    mock_find, mock_update, raw_count,
+):
+    mock_find.return_value = [(4, {"item_id": "TES-001", "post_count": raw_count})]
+    result = socialbu_publish.update_catalog_usage(
+        focus_equipment_id="TES-001",
+        published_datetime="2026-06-02T09:00:00+00:00",
+        config=_stub_config(),
+        service=_stub_service(),
+    )
+    assert result is True
+    _, kwargs = mock_update.call_args
+    assert kwargs["col_updates"]["post_count"] == "1"
+
+
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_tab_resolution_exception_returns_false(
+    mock_find, mock_update, capsys,
+):
+    svc = MagicMock()
+    svc.spreadsheets.return_value.get.return_value.execute.side_effect = RuntimeError(
+        "tab boom"
+    )
+    result = socialbu_publish.update_catalog_usage(
+        focus_equipment_id="TES-004",
+        published_datetime="2026-06-02T09:00:00+00:00",
+        config=_stub_config(),
+        service=svc,
+    )
+    assert result is False
+    mock_find.assert_not_called()
+    mock_update.assert_not_called()
+    assert "WARN" in capsys.readouterr().err
+
+
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_lookup_exception_returns_false(
+    mock_find, mock_update, capsys,
+):
+    mock_find.side_effect = RuntimeError("boom")
+    result = socialbu_publish.update_catalog_usage(
+        focus_equipment_id="TES-004",
+        published_datetime="2026-06-02T09:00:00+00:00",
+        config=_stub_config(),
+        service=_stub_service(),
+    )
+    assert result is False
+    mock_update.assert_not_called()
+    assert "WARN" in capsys.readouterr().err
+
+
+@patch("tools.socialbu_publish.sheets_helpers.update_cells")
+@patch("tools.socialbu_publish.sheets_helpers.find_rows_by_column_value")
+def test_update_catalog_usage_update_exception_returns_false(
+    mock_find, mock_update, capsys,
+):
+    mock_find.return_value = [(7, {"item_id": "TES-004", "post_count": "2"})]
+    mock_update.side_effect = RuntimeError("write failed")
+    result = socialbu_publish.update_catalog_usage(
+        focus_equipment_id="TES-004",
+        published_datetime="2026-06-02T09:00:00+00:00",
+        config=_stub_config(),
+        service=_stub_service(),
+    )
+    assert result is False
+    assert "WARN" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# _cli call-site: publish success invokes update_catalog_usage; dry-run does not
+# ---------------------------------------------------------------------------
+
+def test_cli_publish_success_calls_catalog_usage(monkeypatch):
+    row = {
+        "row_id": "STR-20260528-FB-01",
+        "focus_equipment_id": "TES-004",
+        "status": "approved",
+        "platform": "facebook",
+    }
+
+    fake_service = MagicMock()
+    fake_service.spreadsheets.return_value.get.return_value.execute.return_value = {
+        "sheets": [{"properties": {"title": "Queue"}}]
+    }
+    monkeypatch.setattr(
+        socialbu_publish.sheets_helpers, "get_sheets_service", lambda: fake_service,
+    )
+    monkeypatch.setattr(
+        socialbu_publish.sheets_helpers, "find_rows_by_column_value",
+        lambda *a, **k: [(5, dict(row))],
+    )
+    monkeypatch.setattr(
+        socialbu_publish.sheets_helpers, "update_cells", MagicMock(),
+    )
+    monkeypatch.setattr(
+        socialbu_publish, "publish_row",
+        lambda r, c, *, dry_run=False: {
+            "success": True,
+            "socialbu_post_id": "999",
+            "published_datetime": "2026-06-02T10:00:00+00:00",
+            "error": None,
+            "payload": {},
+        },
+    )
+    mock_usage = MagicMock()
+    monkeypatch.setattr(socialbu_publish, "update_catalog_usage", mock_usage)
+
+    monkeypatch.setattr(
+        sys, "argv", ["socialbu_publish", "--row-id", "STR-20260528-FB-01"],
+    )
+    rc = socialbu_publish._cli()
+
+    assert rc == 0
+    mock_usage.assert_called_once()
+    _, kwargs = mock_usage.call_args
+    assert kwargs["focus_equipment_id"] == "TES-004"
+    assert kwargs["published_datetime"] == "2026-06-02T10:00:00+00:00"
+
+
+def test_cli_dry_run_does_not_call_catalog_usage(monkeypatch):
+    row = {
+        "row_id": "STR-20260528-FB-01",
+        "focus_equipment_id": "TES-004",
+        "status": "approved",
+        "platform": "facebook",
+    }
+
+    fake_service = MagicMock()
+    fake_service.spreadsheets.return_value.get.return_value.execute.return_value = {
+        "sheets": [{"properties": {"title": "Queue"}}]
+    }
+    monkeypatch.setattr(
+        socialbu_publish.sheets_helpers, "get_sheets_service", lambda: fake_service,
+    )
+    monkeypatch.setattr(
+        socialbu_publish.sheets_helpers, "find_rows_by_column_value",
+        lambda *a, **k: [(5, dict(row))],
+    )
+    monkeypatch.setattr(
+        socialbu_publish.sheets_helpers, "update_cells", MagicMock(),
+    )
+    monkeypatch.setattr(
+        socialbu_publish, "publish_row",
+        lambda r, c, *, dry_run=False: {
+            "success": True,
+            "socialbu_post_id": None,
+            "published_datetime": None,
+            "error": None,
+            "payload": {},
+        },
+    )
+    mock_usage = MagicMock()
+    monkeypatch.setattr(socialbu_publish, "update_catalog_usage", mock_usage)
+
+    monkeypatch.setattr(
+        sys, "argv",
+        ["socialbu_publish", "--row-id", "STR-20260528-FB-01", "--dry-run"],
+    )
+    socialbu_publish._cli()
+
+    mock_usage.assert_not_called()

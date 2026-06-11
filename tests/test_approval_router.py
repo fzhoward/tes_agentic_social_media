@@ -778,3 +778,60 @@ def test_edit_caption_reply_text_drops_critic_rerun(monkeypatch):
     assert "Critic" not in text
     # New wording present.
     assert "no re-review" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Catalog usage write-back wired into the publish-success path
+# ---------------------------------------------------------------------------
+
+def test_approve_publish_calls_catalog_usage(monkeypatch):
+    row = _base_row(focus_equipment_id="TES-004")
+    _wire_sheets(monkeypatch, rows=[row])
+    _wire_slack(monkeypatch)
+
+    def fake_publish(target_row, config, *, dry_run=False):
+        return {
+            "success": True,
+            "socialbu_post_id": "7606301",
+            "published_datetime": "2026-06-01T08:55:00+00:00",
+            "error": None,
+            "payload": {},
+        }
+
+    monkeypatch.setattr(socialbu_publish, "publish_row", fake_publish)
+    mock_usage = MagicMock()
+    monkeypatch.setattr(socialbu_publish, "update_catalog_usage", mock_usage)
+
+    payload = _base_payload(f"approve::{row['row_id']}")
+    result = approval_router.handle_action(payload, _make_config())
+
+    assert result["success"] is True
+    mock_usage.assert_called_once()
+    _, kwargs = mock_usage.call_args
+    assert kwargs["focus_equipment_id"] == "TES-004"
+    assert kwargs["published_datetime"] == "2026-06-01T08:55:00+00:00"
+
+
+def test_approve_publish_failure_skips_catalog_usage(monkeypatch):
+    row = _base_row(focus_equipment_id="TES-004")
+    _wire_sheets(monkeypatch, rows=[row])
+    _wire_slack(monkeypatch)
+
+    def fake_publish(target_row, config, *, dry_run=False):
+        return {
+            "success": False,
+            "socialbu_post_id": None,
+            "published_datetime": None,
+            "error": "boom",
+            "payload": {},
+        }
+
+    monkeypatch.setattr(socialbu_publish, "publish_row", fake_publish)
+    mock_usage = MagicMock()
+    monkeypatch.setattr(socialbu_publish, "update_catalog_usage", mock_usage)
+
+    payload = _base_payload(f"approve::{row['row_id']}")
+    approval_router.handle_action(payload, _make_config())
+
+    # No publish → catalog usage must not be touched.
+    mock_usage.assert_not_called()
