@@ -36,7 +36,7 @@ _MAX_ATTEMPTS = 3
 _BASE_DELAY_SECONDS = 1.0
 _HTTP_TIMEOUT = 30
 
-_DRIVE_DOWNLOAD_URL_TEMPLATE = "https://lh3.googleusercontent.com/d/{file_id}"
+_DRIVE_DOWNLOAD_URL_TEMPLATE = "https://drive.google.com/uc?export=download&id={file_id}"
 
 # GBP CTA button routing. Mirrors agents.critic.check_gbp_button's
 # cta_to_button map: the Drafter encodes button intent via cta_type, and the
@@ -142,8 +142,10 @@ def _resolve_media_url(raw: str) -> str:
     """Return a publicly fetchable URL for a Content Queue ``media_url`` value.
 
     Strings that already start with ``http`` pass through. Otherwise the
-    value is treated as a Google Drive file ID and converted to a
-    ``lh3.googleusercontent.com`` direct-content URL.
+    value is treated as a Google Drive file ID and converted to a Google
+    Drive ``uc?export=download`` direct-download URL, which serves both
+    images and video (the older ``lh3.googleusercontent.com`` CDN is
+    image-only and 404s on video file IDs).
     """
     raw = (raw or "").strip()
     if not raw:
