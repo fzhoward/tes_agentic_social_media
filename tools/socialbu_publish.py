@@ -25,6 +25,8 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
+from tools import sheets_helpers
+
 
 load_dotenv(override=False)
 
@@ -60,6 +62,12 @@ _GBP_CTA_TO_BUTTON: dict[str, str] = {
     "directions": "GET_DIRECTIONS",
 }
 _GBP_BUTTONS_REQUIRING_URL: set[str] = {"LEARN_MORE", "BOOK", "ORDER", "SIGN_UP"}
+
+# Content Queue / Equipment Catalog column names used by update_catalog_usage.
+CQ_FOCUS_EQUIPMENT = "focus_equipment_id"
+CAT_ITEM_ID = "item_id"
+CAT_POST_COUNT = "post_count"
+CAT_LAST_POSTED = "last_posted"
 
 
 def _get_account_id(platform: str, config: Any) -> int:
@@ -443,6 +451,99 @@ def publish_row(row: dict, config: Any, *, dry_run: bool = False) -> dict:
     return result
 
 
+def update_catalog_usage(
+    focus_equipment_id: str,
+    published_datetime: str,
+    config: Any,
+    service: Any = None,
+) -> bool:
+    """Increment post_count and set last_posted on the matching catalog row.
+
+    Called after a focus-equipment post publishes successfully, so the
+    Strategist's cooldown/rotation logic sees the item as recently posted.
+    No-focus rows (empty focus_equipment_id) no-op silently and return False —
+    that is normal, not an error. All failures are logged and return False;
+    they never abort the publish flow.
+    """
+    focus = (focus_equipment_id or "").strip()
+    if not focus:
+        return False  # no equipment to credit — expected for no-focus rows
+
+    catalog_id = config.get("catalog.spec_sheet_id", "")
+    if not catalog_id:
+        print(
+            "[publish] WARN: catalog.spec_sheet_id empty — skipping catalog "
+            "usage update",
+            file=sys.stderr,
+        )
+        return False
+
+    if service is None:
+        service = sheets_helpers.get_sheets_service()
+
+    try:
+        meta = service.spreadsheets().get(
+            spreadsheetId=catalog_id,
+            fields="sheets(properties(title))",
+        ).execute()
+        catalog_tab = meta["sheets"][0]["properties"]["title"]
+    except Exception as exc:
+        print(
+            f"[publish] WARN: could not resolve catalog tab for usage "
+            f"update: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+    try:
+        matches = sheets_helpers.find_rows_by_column_value(
+            catalog_id, catalog_tab, CAT_ITEM_ID, focus, service=service,
+        )
+    except Exception as exc:
+        print(
+            f"[publish] WARN: could not look up catalog item {focus!r} for "
+            f"usage update: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+    if not matches:
+        print(
+            f"[publish] WARN: catalog item {focus!r} not in Equipment Catalog "
+            f"— skipping usage update",
+            file=sys.stderr,
+        )
+        return False
+
+    row_number, row_data = matches[0]
+    try:
+        current_count = int(str(row_data.get(CAT_POST_COUNT, "0") or "0").strip())
+    except (TypeError, ValueError):
+        current_count = 0
+    new_count = current_count + 1
+
+    try:
+        sheets_helpers.update_cells(
+            spreadsheet_id=catalog_id,
+            tab_name=catalog_tab,
+            row_number=row_number,
+            col_updates={
+                CAT_POST_COUNT: str(new_count),
+                CAT_LAST_POSTED: published_datetime,
+            },
+            service=service,
+            value_input_option="RAW",
+        )
+        return True
+    except Exception as exc:
+        print(
+            f"[publish] WARN: could not write catalog usage for "
+            f"{focus!r}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -506,6 +607,12 @@ def _cli() -> int:
                 "published_datetime": result["published_datetime"],
                 "socialbu_post_id": result["socialbu_post_id"],
             },
+            service=service,
+        )
+        update_catalog_usage(
+            focus_equipment_id=str(row.get(CQ_FOCUS_EQUIPMENT, "")),
+            published_datetime=result["published_datetime"],
+            config=config,
             service=service,
         )
 

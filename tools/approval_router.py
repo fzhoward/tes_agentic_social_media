@@ -185,6 +185,12 @@ def _publish_and_resolve(
             },
             service=service,
         )
+        socialbu_publish.update_catalog_usage(
+            focus_equipment_id=str(row.get("focus_equipment_id", "")),
+            published_datetime=publish_result.get("published_datetime") or "",
+            config=config,
+            service=service,
+        )
         _add_reaction(payload, "white_check_mark")
         return {
             "action": action,
