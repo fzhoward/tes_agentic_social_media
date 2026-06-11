@@ -159,7 +159,7 @@ GBP posts support a structured button. The button type and URL are set at publis
 
 | GBP Button Type | Maps To CTA Type | Button URL Source |
 |----------------|-------------------|-------------------|
-| CALL | call | Phone number from business_config |
+| CALL | call | User will set in Socialbu |
 | LEARN_MORE | click / visit | {{WEBSITE}} or specific page URL |
 | BOOK | book | {{BOOKING_URL}} |
 | ORDER | book (for applicable businesses) | Order URL |
@@ -180,6 +180,7 @@ The GBP post body should still include CTA text that reinforces the button. The 
 8. **Do not repeat the CTA.** Once, at the end, is enough.
 9. **Do not include a URL in the FB/IG caption body.** Links go in the first comment. The CTA text points there.
 10. **Do not use pricing language in the CTA** unless `strategy.pricing_in_posts` explicitly allows it. "Call for a free quote" implies pricing discussion, which is fine. "Rent for only $X/day" is a pricing claim.
+11. **Do not include phone number or address in GBP CTA** GBP content policy strictly prohibits this and will reject the post.
 
 ## CTA Selection Logic (For Agents)
 

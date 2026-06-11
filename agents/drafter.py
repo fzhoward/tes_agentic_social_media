@@ -97,7 +97,7 @@ REVIEW_CAPTION_FLOOR: int = 500
 # build_drafter_messages so the LLM doesn't drift into hybrid CTAs (e.g.,
 # adding a phone number to a "save" CTA because it saw one in the brand voice).
 CTA_OUTPUT_RULES: dict[str, str] = {
-    "call": "must include the phone number; must not include other actions",
+    "call": "must include the phone number for all platforms EXCEPT gbp, gbp MUST NEVER include phone number; must not include other actions",
     "dm": "must direct to DM/message; must not include phone number or URL",
     "save": "must direct reader to save the post; must NOT include phone number, URL, or any other action",
     "comment": "must ask a question or prompt engagement; must not include phone number or URL",
