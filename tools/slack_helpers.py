@@ -117,7 +117,8 @@ def post_message(
         slack_sdk.errors.SlackApiError on API failure.
     """
     client = get_slack_client()
-    kwargs: dict[str, Any] = {"channel": channel, "text": text}
+    resolved = _resolve_channel_id(channel)
+    kwargs: dict[str, Any] = {"channel": resolved, "text": text}
     if blocks is not None:
         kwargs["blocks"] = blocks
     if thread_ts is not None:
