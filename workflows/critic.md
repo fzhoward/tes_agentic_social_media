@@ -12,7 +12,8 @@ The Critic is an independent quality gate. It evaluates every drafted post again
 |---------|--------|-----------|
 | Queue-driven | `agents/draft_cycle.py` (server-side) | Runs automatically after the Drafter step within the daily `/run/draft-cycle` call |
 | Re-evaluation | `agents/draft_cycle.py` (server-side) | Runs again within the same draft-cycle call when the Drafter resubmits after a `soft_fail` (`revision_round` incremented internally) |
-| Post-edit evaluation | Executor `/slack/interactivity` → `approval_router` | Fires when the owner edits the caption via the Slack approval card (re-runs Critic only, skips Drafter) |
+
+> **Caption edits do NOT re-trigger the Critic.** When the owner edits a caption via the Slack approval card, the edit is a trusted Gate-2 change: `tools/approval_router.py` commits it straight to `approved` and publishes — the Critic is intentionally bypassed (the row already passed it). The Critic only runs as part of the server-side draft-cycle above.
 
 ## Inputs
 

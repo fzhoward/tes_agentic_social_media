@@ -7,7 +7,8 @@ parses ``action_id``, verifies the target Content Queue row is still at
 
     approve       publish via SocialBu
     reject        mark rejected, ask for reason in-thread
-    edit_caption  reset to drafted (Critic re-runs after manual caption edit)
+    edit_caption  reset to drafted; the captured reply commits straight to
+                  publish (Critic intentionally bypassed — trusted Gate-2 edit)
     regen_media   reset to planned, clear only media fields
     regen_all     reset to planned, clear all Drafter + Critic fields
 
