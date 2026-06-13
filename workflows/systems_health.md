@@ -4,7 +4,7 @@
 
 ## Role
 
-The Systems Health Agent is the system's operations manager. It has read-only access across the entire system state — Content Queue, Performance Log, Make.com execution logs, Slack approval activity, and API cost data. It does not modify any state, create content, or change any agent's behavior directly. Its sole output is a weekly Slack report and immediate critical-threshold alerts. The owner reads it, decides what to act on, and moves on.
+The Systems Health Agent is the system's operations manager. It has read-only access across the entire system state — Content Queue, Performance Log, n8n execution logs, Slack approval activity, and API cost data. It does not modify any state, create content, or change any agent's behavior directly. Its sole output is a weekly Slack report and immediate critical-threshold alerts. The owner reads it, decides what to act on, and moves on.
 
 The Systems Health Agent **never says "everything is fine."** Even in a good week, it surfaces the weakest link and suggests what would make the system incrementally better. It always pushes toward optimization, not just alerting on failures.
 
@@ -12,9 +12,9 @@ The Systems Health Agent **never says "everything is fine."** Even in a good wee
 
 | Trigger | Source | Frequency |
 |---------|--------|-----------|
-| Scheduled (weekly report) | Make.com cron | Weekly — `{{SYSTEMS_HEALTH_DAY}}` morning (default: Monday, after Learning Agent) |
-| Critical threshold alert | Make.com real-time checker | Immediate — fires when any critical threshold is crossed |
-| On-demand | Make.com webhook | Owner triggers via Slack or Make |
+| Scheduled (weekly report) | n8n cron | Weekly — `{{SYSTEMS_HEALTH_DAY}}` morning (default: Monday, after Learning Agent) |
+| Critical threshold alert | n8n monitoring trigger | Immediate — fires when any critical threshold is crossed |
+| On-demand | n8n webhook or executor endpoint | Owner triggers on-demand |
 
 **Scheduling note:** The Systems Health Agent runs *after* the Learning Agent on Monday mornings. The Learning Agent rewrites Strategy Guidance first (default: Monday 7:00 AM), then the Systems Health Agent produces its report (default: Monday 8:00 AM). This way the health report can include whether the Learning Agent ran successfully and what it changed.
 
@@ -27,9 +27,9 @@ All inputs are **read-only**. The Systems Health Agent writes nothing to any she
 | Content Queue sheet | Google Sheets (`drive.content_queue_sheet_id`) | Pipeline flow: how many posts at each status, where drop-off occurs, stalled rows |
 | Performance Log sheet | Google Sheets (`drive.performance_log_sheet_id`) | Published post metrics, missing metrics entries, orphaned rows |
 | Strategy Guidance file | Drive file (`drive.strategy_guidance_file_id`) | Staleness check — when was it last updated? Is the Learning Agent silently failing? |
-| Make.com scenario execution logs | Make.com API or webhook data passed by trigger | Agent run success/failure rates, duration, error messages |
-| Slack approval activity | Slack API or Make.com webhook data | Approval timestamps, rejection reasons, regeneration actions, response latency |
-| API cost data | Make.com tracked variables or billing API | Per-agent API spend: LLM calls, image generation (DALL-E), video renders (Creatomate) |
+| n8n execution logs | n8n Executions API or data passed by trigger | Agent run success/failure rates, duration, error messages |
+| Slack approval activity | Slack API | Approval timestamps, rejection reasons, regeneration actions, response latency |
+| API cost data | Provider billing APIs | Per-agent API spend: LLM calls, image generation (DALL-E), video renders (Creatomate) |
 | Business config | `business_config.yaml` | Thresholds, budget limits, queue depth limits, channel names |
 
 ## Outputs
@@ -158,12 +158,12 @@ These fire immediately (not waiting for the weekly report) to `{{SLACK_HEALTH_CH
 
 | Threshold | Condition | Alert message |
 |-----------|-----------|---------------|
-| Pipeline stall | No posts have progressed to a new status in 24h+ | "⚠️ Pipeline stall detected — no posts have moved status in {N} hours. Check Make.com scenario status and agent error logs." |
+| Pipeline stall | No posts have progressed to a new status in 24h+ | "⚠️ Pipeline stall detected — no posts have moved status in {N} hours. Check n8n execution logs and agent error logs." |
 | Consecutive agent failure | Any single agent has failed 5+ times consecutively | "⚠️ {Agent} has failed {N} consecutive times. Last error: {error_message}. Pipeline may be blocked at the {stage} step." |
 | Budget breach | Monthly API spend exceeds `{{MONTHLY_BUDGET_LIMIT}}` | "⚠️ Monthly API spend has reached ${amount} (budget: ${limit}). Top cost driver: {agent} at ${agent_cost}." |
 | Queue overflow | Unapproved queue depth exceeds `approval.max_queue_depth` on any platform | "⚠️ {Platform} approval queue depth is {N} (limit: {max}). The Strategist will pause planning for this platform. Approve or reject pending posts to resume." |
 | Learning Agent stale | Strategy Guidance not updated in 14+ days | "⚠️ Strategy Guidance has not been updated in {N} days. The Learning Agent may be failing silently. Check Monday execution logs." |
-| Metrics blackout | No new metrics written to Performance Log in 48h+ (and posts have been published) | "⚠️ No metrics collected in 48h despite active publishing. Check T+24h and T+7d Make scenarios and API credentials." |
+| Metrics blackout | No new metrics written to Performance Log in 48h+ (and posts have been published) | "⚠️ No metrics collected in 48h despite active publishing. Check metrics collection workflows and API credentials." |
 
 ## Processing Steps
 
@@ -174,7 +174,7 @@ Pull all inputs for the reporting period (default: last 7 days):
 - Content Queue: all rows, all statuses, with timestamps
 - Performance Log: all rows from the reporting period
 - Strategy Guidance: file metadata (last modified date)
-- Make.com execution logs: success/failure/duration per scenario
+- n8n execution logs: success/failure/duration per workflow
 - Slack activity: approval card timestamps, owner action timestamps, action types
 - Cost data: API call counts and estimated spend per agent
 
@@ -256,10 +256,10 @@ The owner can:
 |-------|----------|
 | Content Queue inaccessible | Post partial report to `{{SLACK_HEALTH_CHANNEL}}` noting the gap. Compute what's possible from other inputs. |
 | Performance Log inaccessible | Skip metrics and data quality sections. Note in report: "Performance Log unavailable — metrics analysis skipped." |
-| Make.com logs unavailable | Skip agent scorecards timing sections. Note in report. |
+| n8n execution logs unavailable | Skip agent scorecards timing sections. Note in report. |
 | Slack activity data unavailable | Skip owner bottleneck analysis. Note in report. |
 | Cost data unavailable | Skip cost trends section. Note in report. |
-| All inputs unavailable | Post a single alert: "⚠️ Systems Health Agent could not access any system data. All inputs returned errors. Investigate Make.com and Google Sheets connectivity." |
+| All inputs unavailable | Post a single alert: "⚠️ Systems Health Agent could not access any system data. All inputs returned errors. Investigate n8n, the executor, and Google Sheets connectivity." |
 | `{{SLACK_HEALTH_CHANNEL}}` not writable | Log error to `{{SLACK_ERROR_CHANNEL}}` as fallback. |
 
 **Graceful degradation:** The Systems Health Agent always produces *something*, even if inputs are partially missing. It reports on what it can access and clearly notes what it couldn't check.
@@ -268,7 +268,7 @@ The owner can:
 
 If the Systems Health Agent fails entirely, **nothing breaks.** No other agent depends on its output. The pipeline continues operating. The only consequence is that the owner doesn't get the weekly health digest and may miss emerging issues until they become obvious.
 
-This is low-urgency in terms of system impact, but the Systems Health Agent failing is itself a data quality signal — if it's been more than 2 weeks since a report, Make.com should surface that in `#system-errors`.
+This is low-urgency in terms of system impact, but the Systems Health Agent failing is itself a data quality signal — if it's been more than 2 weeks since a report, n8n execution logs should surface that and the error should be checked in `#system-errors`.
 
 ## What the Systems Health Agent Does NOT Do
 

@@ -126,7 +126,7 @@ Warnings are noted in the Critic output and visible on the Slack approval card, 
 
 | ID | Check | Notes |
 |----|-------|-------|
-| W1 | **Image not yet available.** The draft does not have a confirmed media asset attached. This is required before SocialBu can schedule the Instagram post. Make.com handles this gate at publishing time. | Platform Style Skill: Instagram Media Requirements |
+| W1 | **Image not yet available.** The draft does not have a confirmed media asset attached. This is required before SocialBu can schedule the Instagram post. The publishing step (SocialBu API call) enforces this gate — IG posts without media are rejected. | Platform Style Skill: Instagram Media Requirements |
 | W2 | **Thin experience input.** The Strategist or Drafter flagged the experience input as thin. The post may be less specific than ideal. | Brand voice: Experience Integration |
 | W3 | **GBP length close to truncation.** The GBP post body is within 20 characters of the ~150-200 character truncation threshold, meaning the hook may be partially cut off in the panel view. | Platform Style Skill: GBP Character Limits |
 
@@ -184,7 +184,7 @@ if revision_round >= 3 and verdict == "soft_fail":
     notes = "Draft failed 2 revision rounds. Remaining issues escalated to hard_fail."
 ```
 
-The Make.com scenario tracks the revision_round counter. The Critic receives it as input and includes it in the output.
+`agents/draft_cycle.py` tracks the revision_round counter. The Critic receives it as input and includes it in the output.
 
 ---
 
@@ -216,8 +216,8 @@ All checks run on every evaluation. The Critic does not skip categories based on
 | Platform Style Skill | Drive (portable) | Character limits, platform constraints |
 | CTA Skill | Drive (portable) | CTA type rules, phrasing rules |
 | Content Type Definitions | Drive (portable) | Content type definitions for alignment checks |
-| revision_round | Make.com scenario | Which revision round this is (1, 2, or 3) |
-| Previous Critic output | Make.com scenario (if revision_round > 1) | The previous failed_checks, so the Critic can verify whether previous issues were addressed |
+| revision_round | `agents/draft_cycle.py` | Which revision round this is (1, 2, or 3) |
+| Previous Critic output | `agents/draft_cycle.py` (if revision_round > 1) | The previous failed_checks, so the Critic can verify whether previous issues were addressed |
 
 ---
 

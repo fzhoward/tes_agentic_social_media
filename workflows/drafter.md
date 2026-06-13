@@ -10,10 +10,10 @@ The Drafter takes a single planned Content Queue row and produces the finished d
 
 | Trigger | Source | Frequency |
 |---------|--------|-----------|
-| Queue-driven | Make.com scenario | Fires when a Content Queue row has `status = planned` and `scheduled_datetime` is within the lead-time window (e.g., 36 hours out) |
-| Re-draft (caption) | Make.com scenario | Fires when the owner selects "Edit caption" or "Regenerate all" on the Slack approval card |
-| Re-draft (media only) | Make.com scenario | Fires when the owner selects "Regenerate media" on the Slack approval card |
-| Revision (from Critic) | Make.com scenario | Fires when the Critic returns a `soft_fail` verdict with fix instructions |
+| Queue-driven | `agents/draft_cycle.py` (server-side) | Runs within the daily n8n Drafter Cycle (`POST /run/draft-cycle`); picks `status = planned` rows within the lead-time window |
+| Re-draft (caption) | Executor `/slack/interactivity` → `approval_router` | Fires when the owner selects "Edit caption" or "Regenerate all" on the Slack approval card |
+| Re-draft (media only) | Executor `/slack/interactivity` → `approval_router` | Fires when the owner selects "Regenerate media" on the Slack approval card |
+| Revision (from Critic) | `agents/draft_cycle.py` (server-side) | Fires within the same draft-cycle call when the Critic returns a `soft_fail` verdict (`revision_round` incremented internally) |
 
 ## Inputs
 
@@ -31,7 +31,7 @@ The Drafter takes a single planned Content Queue row and produces the finished d
 | Content Type Definitions | Drive (portable) | Content type definition for the assigned type |
 | Business config | `business_config.yaml` | Phone number, website, DM platforms, contact info for CTA phrasing |
 | Source photo | Google Drive (file ID from catalog or `source_image_id`) | Input to the image generation pipeline |
-| Critic fix instructions | Make.com (if revision round) | Specific fixes to apply from the previous Critic evaluation |
+| Critic fix instructions | `agents/draft_cycle.py` (if revision round) | Specific fixes to apply from the previous Critic evaluation |
 
 ## Outputs
 
@@ -240,7 +240,7 @@ None at the drafting step. The draft goes to the Critic, then to Slack approval.
 
 ## Failure Mode
 
-If the Drafter fails on a single row, that row stays at `status = planned` and Make.com can retry on the next trigger cycle. Other planned rows are unaffected. If the Drafter fails repeatedly on the same row, it eventually expires (scheduled_datetime passes) and the Strategist backfills the slot on its next run.
+If the Drafter fails on a single row, that row stays at `status = planned` and the next n8n Drafter Cycle run will retry. Other planned rows are unaffected. If the Drafter fails repeatedly on the same row, it eventually expires (scheduled_datetime passes) and the Strategist backfills the slot on its next run.
 
 ## Config Dependencies
 

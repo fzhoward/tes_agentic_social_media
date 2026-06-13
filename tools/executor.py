@@ -1,6 +1,6 @@
 """HTTP executor for the agentic social media pipeline.
 
-A thin Flask service that lets the orchestration layer (Make.com) and Slack
+A thin Flask service that lets the orchestration layer (n8n) and Slack
 invoke the approval-pipeline CLIs on this machine. It does NOT contain pipeline
 logic — it shells out to the existing tools via the repo's venv interpreter and
 returns their JSON. Keeping it a dumb runner means a failure in one handler
@@ -14,8 +14,8 @@ Endpoints:
                                         async (202 + background thread)
     POST /run/draft-cycle               Front-half revision loop — bearer auth,
                                         async (202 + background thread)
-    POST /run/approval-card             Make Scenario 5 — bearer auth
-    POST /run/approval-card-reschedule  Make Scenario 7 — bearer auth
+    POST /run/approval-card             n8n Approval Card workflow — bearer auth
+    POST /run/approval-card-reschedule  n8n Reschedule workflow — bearer auth
     POST /slack/interactivity           Slack Scenario 6 — Slack signature auth
     POST /slack/events                  Slack Events API — edited-caption
                                         capture — Slack signature auth

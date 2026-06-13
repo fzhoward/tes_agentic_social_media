@@ -10,8 +10,8 @@ The Strategist is the system's editorial planner. It produces a rolling content 
 
 | Trigger | Source | Frequency |
 |---------|--------|-----------|
-| Scheduled | Make.com cron | Daily at 6:00 AM ET (configurable) |
-| On-demand | Slack `/replan` command via Make.com webhook | Manual kick by owner |
+| Scheduled | n8n cron | Sunday 03:00 ET (managed via `tools/n8n_deploy.py`) |
+| On-demand | Slack `/replan` command → executor `/run/strategist` | Manual kick by owner |
 
 ## Inputs
 
@@ -190,7 +190,7 @@ If the Strategist fails, the existing Content Queue rows continue through the pi
 
 ## Output Schema
 
-The Strategist returns structured JSON to Make.com:
+The Strategist returns structured JSON to the orchestrator (n8n):
 
 ```json
 {

@@ -2109,8 +2109,8 @@ def _verdict_to_status(verdict: str, current_status: str) -> str:
         return "awaiting_approval"
     if verdict == "hard_fail":
         return "hard_fail"
-    # soft_fail leaves status as-is (typically `drafted`); Make.com routes
-    # back to the Drafter and increments revision_round.
+    # soft_fail leaves status as-is (typically `drafted`); agents/draft_cycle.py
+    # handles the redraft loop server-side and increments revision_round.
     return current_status
 
 

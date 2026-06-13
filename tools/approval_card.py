@@ -5,8 +5,8 @@ Slack Block Kit message for each, and posts to the ``#approvals`` channel
 (configured under ``approval.slack_channel``).
 
 The card is a delivery artifact only — it carries enough context for the
-owner to make a call, plus five action buttons that fire through Make.com
-to ``tools.approval_router.handle_action``.
+owner to make a call, plus five action buttons that post to the executor's
+``/slack/interactivity`` endpoint (handled by ``tools.approval_router``).
 
 This tool also exposes ``reschedule_missed_approvals``, which scans for
 overdue approval rows, slides each one 24h forward, and auto-rejects after

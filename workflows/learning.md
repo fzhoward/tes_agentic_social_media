@@ -10,8 +10,8 @@ The Learning Agent is the system's analyst. It reads performance data, identifie
 
 | Trigger | Source | Frequency |
 |---------|--------|-----------|
-| Scheduled | Make.com cron | Weekly — `{{LEARNING_AGENT_DAY}}` morning (default: Monday) |
-| On-demand | Make.com webhook | Owner triggers via Slack or Make |
+| Scheduled | n8n cron | Weekly — `{{LEARNING_AGENT_DAY}}` morning (default: Monday) |
+| On-demand | n8n webhook or executor endpoint | Owner triggers on-demand |
 
 ## Inputs
 
@@ -21,7 +21,7 @@ The Learning Agent is the system's analyst. It reads performance data, identifie
 | Content Queue sheet | Google Sheets (`drive.content_queue_sheet_id`) | What each post looked like (content type, objective, media format, platform, CTA type, catalog item, angle) |
 | Current Strategy Guidance | Drive file (`drive.strategy_guidance_file_id`) | The existing playbook to compare against and rewrite |
 | Business config | `business_config.yaml` | Objective ratio target, min data points for patterns, major shift threshold |
-| Owner overrides | Slack `/override <note>` captured by Make.com | Manual instructions to incorporate into the next analysis |
+| Owner overrides | Slack `/override <note>` captured via the executor | Manual instructions to incorporate into the next analysis |
 
 ## Outputs
 

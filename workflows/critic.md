@@ -10,17 +10,17 @@ The Critic is an independent quality gate. It evaluates every drafted post again
 
 | Trigger | Source | Frequency |
 |---------|--------|-----------|
-| Queue-driven | Make.com scenario | Fires when a Content Queue row has `status = drafted` |
-| Re-evaluation | Make.com scenario | Fires when the Drafter resubmits after applying Critic fix instructions (`revision_round` incremented) |
-| Post-edit evaluation | Make.com scenario | Fires when the owner edits the caption via the Slack approval card (re-runs Critic only, skips Drafter) |
+| Queue-driven | `agents/draft_cycle.py` (server-side) | Runs automatically after the Drafter step within the daily `/run/draft-cycle` call |
+| Re-evaluation | `agents/draft_cycle.py` (server-side) | Runs again within the same draft-cycle call when the Drafter resubmits after a `soft_fail` (`revision_round` incremented internally) |
+| Post-edit evaluation | Executor `/slack/interactivity` → `approval_router` | Fires when the owner edits the caption via the Slack approval card (re-runs Critic only, skips Drafter) |
 
 ## Inputs
 
 | Input | Source | Purpose |
 |-------|--------|---------|
-| `row_id` | Make.com scenario | Content Queue row to evaluate |
-| `revision_round` | Make.com scenario | Which evaluation round this is (1 on first pass, 2 or 3 on revisions) |
-| `previous_critic_output` | Make.com scenario (if `revision_round > 1`) | The previous `failed_checks` array so the Critic can verify whether previous issues were addressed |
+| `row_id` | `agents/draft_cycle.py` | Content Queue row to evaluate |
+| `revision_round` | `agents/draft_cycle.py` | Which evaluation round this is (1 on first pass, 2 or 3 on revisions — incremented by draft_cycle) |
+| `previous_critic_output` | `agents/draft_cycle.py` (if `revision_round > 1`) | The previous `failed_checks` array so the Critic can verify whether previous issues were addressed |
 | Content Queue row (drafted) | Google Sheets | Full draft: caption, creative_hook_text, first_comment, cta_text, hook_text, image_overlay_text, media_url, media_format_used, platform, objective, content_type, focus_equipment_id, draft_rationale |
 | Critic Checklist | `skills/critic_checklist.md` | The full evaluation criteria with check IDs, categories, and verdict levels |
 | Brand voice file | `skills/brand_voice.md` | Voice rules, formatting rules, banned language, post objective rules, pricing policy |
@@ -39,15 +39,15 @@ The Critic is an independent quality gate. It evaluates every drafted post again
 
 ### Status transitions
 
-- **pass** → `status = awaiting_approval`. Make.com posts the Slack approval card.
-- **soft_fail** → `status` remains `drafted`. Make.com increments `revision_round` and routes back to the Drafter with `failed_checks` as fix instructions.
-- **hard_fail** → `status = hard_fail`. Make.com posts an escalation card to `{{SLACK_ERROR_CHANNEL}}`.
+- **pass** → `status = awaiting_approval`. The n8n Approval Card workflow (`POST /run/approval-card`) picks up the row and posts the Slack card.
+- **soft_fail** → `status` remains `drafted`. `agents/draft_cycle.py` increments `revision_round` and calls the Drafter again with `failed_checks` as fix instructions (server-side loop — the orchestrator is not involved in individual rounds).
+- **hard_fail** → `status = hard_fail`. `agents/draft_cycle.py` posts an escalation card to `{{SLACK_ERROR_CHANNEL}}`.
 
 ## Processing Steps
 
 ### 1. Load Context
 
-Load the drafted Content Queue row by `row_id`. Verify `status == "drafted"` — if not, return early with a no-op result so Make.com doesn't double-evaluate.
+Load the drafted Content Queue row by `row_id`. Verify `status == "drafted"` — if not, return early with a no-op result to avoid double-evaluation.
 
 Load the catalog item record if `focus_equipment_id` is set. Load the review record if `content_type` is Social Proof and `review_id` is set. Load all skills referenced by the checklist via `tools/skill_loader.py`.
 
@@ -142,7 +142,7 @@ In `--dry-run` mode, the agent evaluates but does not write.
 - **Maximum 2 revision rounds.** If the draft still has soft_fail issues after round 2, the Critic escalates to `hard_fail` on round 3 with all remaining issues listed.
 - `hard_fail` items are never sent back for revision. They escalate immediately on the first evaluation.
 
-The Critic is stateless between rounds. It receives `revision_round` and `previous_critic_output` as input, evaluates fresh, and returns. The Critic does not call the Drafter — Make.com handles routing.
+The Critic is stateless between rounds. It receives `revision_round` and `previous_critic_output` as input, evaluates fresh, and returns. The Critic does not call the Drafter — `agents/draft_cycle.py` handles the redraft loop server-side.
 
 ## Autonomous Decisions
 
@@ -159,17 +159,17 @@ None. The Critic operates fully autonomously. Its output feeds into the Slack ap
 
 | Error | Behavior |
 |-------|----------|
-| Row not found | Return error result, do not write to sheet. Make.com retries. |
+| Row not found | Return error result, do not write to sheet. The draft-cycle loop will surface the error; n8n retries the full cycle on the next run. |
 | Status not `drafted` | Return early no-op result. Do not write to sheet. |
 | Catalog item not found (for G checks) | Skip G checks, add a warning, continue with all other checks. |
 | Review record not found (for Social Proof) | Skip review-fidelity checks, add a warning, continue. |
-| Brand voice / checklist file not accessible | Log error, abort evaluation. The draft stays at `drafted` and Make.com retries. |
+| Brand voice / checklist file not accessible | Log error, abort evaluation. The draft stays at `drafted` and the next draft-cycle run will retry. |
 | OpenAI call fails | Retry once with a JSON-only nudge. If still failing, return error result and leave status at `drafted`. |
 | LLM JSON parse fails | Retry once. If still failing, return error and leave status at `drafted`. |
 
 ## Failure Mode
 
-If the Critic fails to run, the draft stays at `status = drafted`. Make.com retries on the next cycle. The draft does not advance to approval without a Critic evaluation. This is a hard gate — there is no bypass.
+If the Critic fails to run, the draft stays at `status = drafted`. The next draft-cycle run will retry. The draft does not advance to approval without a Critic evaluation. This is a hard gate — there is no bypass.
 
 ## What the Critic Does NOT Do
 
@@ -177,14 +177,14 @@ If the Critic fails to run, the draft stays at `status = drafted`. Make.com retr
 - **Does not rewrite content.** The Critic provides fix instructions. The Drafter applies them.
 - **Does not evaluate hooks.** Hook quality is governed by the Hook Creation Skill's scoring rubric. The Critic checks only that a hook exists, that the opening hook line is not repeated later in the caption (B9), and that `creative_hook_text` meets its constraints (B11).
 - **Does not check media format.** Whether the Strategist's media format assignment was correct is not a Critic concern.
-- **Does not call the Drafter.** Routing on `soft_fail` is Make.com's responsibility.
+- **Does not call the Drafter.** Routing on `soft_fail` is `agents/draft_cycle.py`'s responsibility.
 
 ## Config Dependencies
 
 | Config Path | Purpose |
 |-------------|---------|
 | `apis.llm_provider_critic` | LLM provider (must be `openai`) |
-| `approval.error_channel` | Where Make.com posts hard_fail escalations |
+| `approval.error_channel` | Where `agents/draft_cycle.py` posts hard_fail escalations |
 | `catalog.spec_sheet_id` | Catalog sheet for spec verification (G1-G3) |
 | `catalog.reviews_sheet_id` | Reviews sheet for Social Proof verification |
 | `drive.content_queue_sheet_id` | Content Queue sheet being evaluated |

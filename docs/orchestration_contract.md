@@ -1,5 +1,7 @@
 # Orchestration Contract — n8n Migration Spec
 
+> **Migration status: COMPLETE as of 2026-06-14.** n8n Cloud (https://tessys.app.n8n.cloud) is live and Make.com is fully retired. This document is retained as the historical contract and Make→n8n mapping reference. Do not strip Make.com references from it — they are the intentional historical record of what was migrated and why.
+
 **Purpose:** Complete, code-verified specification of every integration point the orchestrator must reproduce when migrating from Make.com to n8n Cloud. The agents and tools are unchanged. Only the orchestrator changes.
 
 **Ground rules for this document:** Every behavioral claim cites the file and line it was read from. Anything not directly verifiable from the code is labeled as either INFERRED or UNKNOWN-FROM-CODE and must be resolved from the Make.com UI before cutting over.

@@ -56,11 +56,20 @@ Different agents use different LLM providers. The Drafter uses Anthropic, the Cr
 
 Each agent is built and tested as a standalone unit before pipeline integration. The owner provides manual inputs, evaluates outputs, and iterates on prompts and SOPs until quality is proven. Content-producing agents (Strategist, Drafter, Critic) start generating usable assets immediately — weeks before the full orchestration layer exists.
 
-The pipeline gets wired together with Make.com only after the individual agents are proven.
+The pipeline gets wired together with the orchestrator only after the individual agents are proven.
 
-### Make.com Orchestration
+### n8n Orchestration
 
-Make.com is the orchestrator. It triggers agent runners on schedule or via webhook, passes structured JSON input, and routes the structured JSON output to the next step. Agents don't know about Make.com — they receive input, do their job, and return output. The orchestration layer is entirely separate from agent logic.
+n8n (https://tessys.app.n8n.cloud) is the orchestrator. It triggers agent runners on a cron schedule via HTTP POST to the executor (`tools/executor.py`) `/run/*` endpoints with bearer auth (`EXECUTOR_TOKEN`). Agents don't know about n8n — they receive input, do their job, and return output. The orchestration layer is entirely separate from agent logic.
+
+The five n8n workflows (managed via `tools/n8n_deploy.py`) are:
+- **Indexer** — daily 02:00 ET → `POST /run/indexer`
+- **Strategist** — Sunday 03:00 ET → `POST /run/strategist`
+- **Drafter Cycle** — daily 04:00 ET → `POST /run/draft-cycle` (runs `agents/draft_cycle.py`, which executes the full Drafter→Critic→redraft loop server-side — the orchestrator is not involved in individual rounds)
+- **Approval Card** — every 30 min → `POST /run/approval-card`
+- **Reschedule** — daily 01:00 ET → `POST /run/approval-card-reschedule`
+
+Slack button actions (approve, reject, edit-caption, regen-media, regen-all) post directly from Slack to the executor's `/slack/interactivity` endpoint — they are handled by `tools/approval_router.py` and never go through n8n.
 
 ---
 

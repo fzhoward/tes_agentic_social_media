@@ -214,7 +214,7 @@ When the system generates one image asset shared across platforms, it must accou
 - **GBP crop:** 4:3 landscape (1200 x 900 px). The image pipeline should produce a secondary crop from the primary asset, or the system should generate a separate GBP-optimized image.
 - **Safe zone:** When composing text overlays on the primary 4:5 image, keep critical text within the center region that survives a 4:3 crop. This ensures the hook text remains readable if the image is reused for GBP.
 - **Carousel consistency:** All carousel cards must share the same aspect ratio (enforced by Instagram). Use 4:5 for all cards.
-- **Instagram scheduling dependency:** Because SocialBu will reject an Instagram scheduling call without a media attachment, the image pipeline is a hard blocker for Instagram posts. The Make.com scenario that triggers scheduling must confirm image availability before calling the SocialBu API for Instagram. Facebook and GBP can technically proceed without images, but the system should treat image-ready as a prerequisite for all platforms for consistency.
+- **Instagram scheduling dependency:** Because SocialBu will reject an Instagram scheduling call without a media attachment, the image pipeline is a hard blocker for Instagram posts. The Drafter (via the draft-cycle) must ensure a `media_url` is set before the row reaches `awaiting_approval`; the SocialBu API call at publish time enforces this gate. Facebook and GBP can technically proceed without images, but the system should treat image-ready as a prerequisite for all platforms for consistency.
 
 ---
 

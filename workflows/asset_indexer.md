@@ -10,8 +10,8 @@ The Asset Indexer is the system's inventory manager. It reads the business's sou
 
 | Trigger | Source | Frequency |
 |---------|--------|-----------|
-| Scheduled | Make.com cron | Nightly (configurable in Make) |
-| On-demand | Drive change webhook via Make.com | When files are added/modified in the asset folders |
+| Scheduled | n8n cron | Daily 02:00 ET (managed via `tools/n8n_deploy.py`) |
+| On-demand | Drive change webhook → executor `/run/indexer` | When files are added/modified in the asset folders |
 
 ## Inputs
 
@@ -124,7 +124,7 @@ If the Asset Indexer fails completely, the rest of the system continues to opera
 
 ## Output Schema
 
-The Asset Indexer returns structured JSON to Make.com:
+The Asset Indexer returns structured JSON to the orchestrator (n8n):
 
 ```json
 {

@@ -1,6 +1,7 @@
 """Slack interactive payload router for approval card actions.
 
-Make.com forwards Slack ``block_actions`` payloads to this tool. The router
+Slack posts ``block_actions`` payloads directly to the executor's
+``/slack/interactivity`` endpoint, which invokes this router. The router
 parses ``action_id``, verifies the target Content Queue row is still at
 ``awaiting_approval``, and dispatches one of five handlers:
 
