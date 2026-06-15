@@ -707,8 +707,9 @@ def assemble_prompt(
             f"first; among those, prefer longer reviews (higher review_length) "
             f"since they give the Drafter more material. If all reviews have been "
             f"used at least once, prefer the oldest last_used_date. Never invent a "
-            f"review_id. Aim for 1-2 Social Proof posts per platform per week when "
-            f"plenty of usable reviews are available.\n\n"
+            f"review_id. Aim for 1-2 Social Proof posts per week on Facebook and "
+            f"Instagram when plenty of usable reviews are available; aim for AT MOST "
+            f"1 Social Proof post per week on Google Business Profile (gbp).\n\n"
             f"{review_lines}\n"
         )
     else:
@@ -763,7 +764,7 @@ Use only these exact strings for content_type:
 
 Across a full 7-day planning cycle, aim to use at least 6 of the 9 content types. If a content type requires inputs you don't have (Job Story requires real job details, Promotional requires a real offer or availability window), skip it — don't fabricate to fill the slot. But don't skip types just because they're less familiar: Comparison / Decision Helper, Educational Tip, and Local Connection don't require owner-supplied source material and should appear regularly across the week.
 
-Social Proof / Customer Story is available whenever the "Available Reviews" section below is non-empty. When reviews are available, include 1-2 Social Proof posts per platform per week, each one tied to a real review_id from that list. When the section says (none), do not plan Social Proof at all.
+Social Proof / Customer Story is available whenever the "Available Reviews" section below is non-empty. When reviews are available, include 1-2 Social Proof posts per week on Facebook and Instagram, and no more than 1 Social Proof post per week on Google Business Profile (gbp), each one tied to a real review_id from that list. When the section says (none), do not plan Social Proof at all.
 
 # Media Format Rules
 
@@ -1265,6 +1266,68 @@ def enforce_video_cap(
     return posts, warnings
 
 
+def enforce_content_type_caps(
+    posts: list[dict],
+    caps_by_platform: dict,
+) -> tuple[list[dict], list[str]]:
+    """Drop excess content-type posts per platform according to config caps.
+
+    Returns (survivors, warnings). The first `max` posts (sorted by
+    scheduled_datetime ascending, unparseable sorts last) are kept; any beyond
+    the cap are dropped and a warning is emitted for each drop.
+
+    If caps_by_platform is falsy this is a no-op: returns (posts, []).
+    """
+    if not caps_by_platform:
+        return posts, []
+
+    warnings: list[str] = []
+
+    # Group posts by normalized platform (same idiom as enforce_video_cap).
+    by_platform: dict[str, list[dict]] = defaultdict(list)
+    for p in posts:
+        platform = str(p.get(CQ_PLATFORM, "")).strip().lower()
+        by_platform[platform].append(p)
+
+    # Collect the ids() of posts to drop.
+    to_drop: set[int] = set()
+
+    for platform, cap_map in caps_by_platform.items():
+        platform_norm = str(platform).strip().lower()
+        plist = by_platform.get(platform_norm, [])
+        if not plist:
+            continue
+
+        for content_type, max_allowed in cap_map.items():
+            # Collect matching posts.
+            matching = [
+                p for p in plist
+                if str(p.get(CQ_CONTENT_TYPE, "")).strip() == content_type
+            ]
+            if len(matching) <= max_allowed:
+                continue
+
+            # Sort by scheduled_datetime ascending; unparseable sorts last.
+            matching.sort(
+                key=lambda r: _parse_dt(r.get(CQ_SCHEDULED, ""))
+                or datetime.max.replace(tzinfo=ET)
+            )
+
+            # Keep the first max_allowed; drop the rest.
+            excess = matching[max_allowed:]
+            for p in excess:
+                to_drop.add(id(p))
+                warnings.append(
+                    f"platform {platform_norm}: dropped excess {content_type} "
+                    f"(cap={max_allowed}, "
+                    f"scheduled_datetime={p.get(CQ_SCHEDULED)})"
+                )
+
+    # Preserve original ordering of survivors.
+    survivors = [p for p in posts if id(p) not in to_drop]
+    return survivors, warnings
+
+
 # --- Step 10: Derived fields ---
 
 def derive_text_overlay(media_format: str) -> str:
@@ -1539,6 +1602,9 @@ def _run_planning(dry_run: bool, config: Config) -> dict:
             "strategy.variety_constraints.no_item_repeat_within_days", 7
         )
     )
+    content_type_caps = config.get(
+        "strategy.variety_constraints.content_type_caps_per_platform", {}
+    )
     target_ratio = config.get(
         "strategy.objective_ratio",
         {"brand_awareness": 60, "lead_generation": 40},
@@ -1774,6 +1840,8 @@ def _run_planning(dry_run: bool, config: Config) -> dict:
         valid_posts, MAX_VIDEOS_PER_PLATFORM
     )
     validation_warnings.extend(video_warnings)
+    valid_posts, cap_warnings = enforce_content_type_caps(valid_posts, content_type_caps)
+    validation_warnings.extend(cap_warnings)
 
     # --- Step 10: derived fields ---
     valid_posts = assign_row_ids(valid_posts)

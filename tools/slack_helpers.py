@@ -20,7 +20,9 @@ rich messages build their own Block Kit JSON and pass it as `blocks=`.
 
 from __future__ import annotations
 
+import html
 import os
+import re
 from typing import Any
 
 from dotenv import load_dotenv
@@ -218,3 +220,51 @@ def get_channel_history(channel: str, limit: int = 20) -> list[dict]:
     response = client.conversations_history(channel=resolved, limit=limit)
     messages = response.get("messages", []) or []
     return [dict(m) for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# Slack mrkdwn sanitizer (pure function — no Slack client dependency)
+# ---------------------------------------------------------------------------
+
+# Compiled regexes for unwrap_slack_mrkdwn — pre-compiled for performance.
+_RE_PIPED = re.compile(r"<([^<>|]+)\|([^<>]+)>")          # <url|display>
+_RE_BARE_TEL_MAILTO = re.compile(r"<(tel|mailto):([^<>|]+)>")  # <tel:X> / <mailto:X>
+# Bare URL must carry a scheme (e.g. https://, ftp://). Scoping to scheme-bearing
+# links keeps legitimate caption text containing literal angle brackets intact —
+# e.g. "load < 5 tons > 3" must NOT be mangled into "load  5 tons  3".
+_RE_BARE_URL = re.compile(r"<([a-zA-Z][a-zA-Z0-9+.\-]*://[^<>|\s]+)>")  # <https://x>
+
+
+def unwrap_slack_mrkdwn(text: str) -> str:
+    """Strip Slack mrkdwn link syntax and unescape HTML entities.
+
+    This is a pure function with no Slack client dependency.
+
+    Processing order (critical — do not reorder):
+      1. Unwrap piped form:  <url|display>      → display
+      2. Unwrap bare tel/mailto: <tel:X>        → X (scheme dropped)
+      3. Unwrap bare scheme-bearing URL: <https://x> → https://x (scheme kept)
+      4. Unescape HTML entities (html.unescape) — handles &lt; &gt; &amp; and
+         numeric/named entities in a single correct pass.
+
+    Slack escapes &, <, > exactly once, so on real Slack-captured input this is
+    idempotent. Unwrapping (steps 1-3) is itself idempotent because clean output
+    contains no <...> link forms.
+    """
+    if not text:
+        return text
+
+    # Step 1: piped form — keep display text.
+    text = _RE_PIPED.sub(lambda m: m.group(2), text)
+
+    # Step 2: bare tel:/mailto: — drop scheme, keep number/address.
+    text = _RE_BARE_TEL_MAILTO.sub(lambda m: m.group(2), text)
+
+    # Step 3: bare scheme-bearing URL — keep the URL intact.
+    text = _RE_BARE_URL.sub(lambda m: m.group(1), text)
+
+    # Step 4: HTML entity unescaping (runs after unwrap so escaped angle
+    # brackets typed by the user are never mistaken for link delimiters).
+    text = html.unescape(text)
+
+    return text

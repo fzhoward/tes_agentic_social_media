@@ -43,6 +43,7 @@ from tools import (
     sheets_helpers,
     skill_loader,
 )
+from tools.slack_helpers import unwrap_slack_mrkdwn
 from tools.config_loader import Config, load_config
 
 
@@ -679,6 +680,9 @@ def validate_llm_output(
         issues.append(reason)
 
     full_caption = assemble_caption(hook, body, cta_text)
+    # Defense-in-depth: strip any Slack mrkdwn that the LLM may have emitted.
+    # Applied before caption-length validation so the stored value is clean.
+    full_caption = unwrap_slack_mrkdwn(full_caption)
 
     for field, value in (
         ("caption_hook", hook),
@@ -2571,12 +2575,15 @@ def draft_single_row(
             "dry_run": dry_run,
         }
 
-    caption_hook = str(parsed.get("caption_hook", "")).strip()
-    caption_body = str(parsed.get("caption_body", "")).strip()
-    cta_text = str(parsed.get("cta_text", "")).strip()
+    # Sanitize text fields the same way as the assembled caption (see
+    # validate_llm_output) so every stored column is consistent — no Slack
+    # mrkdwn leaks into caption_hook / caption_body / cta_text / first_comment.
+    caption_hook = unwrap_slack_mrkdwn(str(parsed.get("caption_hook", "")).strip())
+    caption_body = unwrap_slack_mrkdwn(str(parsed.get("caption_body", "")).strip())
+    cta_text = unwrap_slack_mrkdwn(str(parsed.get("cta_text", "")).strip())
     overlay_hook = str(parsed.get("image_overlay_hook", "")).strip()
     creative_hook_text_val = str(parsed.get("creative_hook_text", "")).strip()
-    first_comment = str(parsed.get("first_comment", "")).strip()
+    first_comment = unwrap_slack_mrkdwn(str(parsed.get("first_comment", "")).strip())
     draft_rationale = str(parsed.get("draft_rationale", "")).strip()
 
     # --- Step 5c: apply LLM image selection ---

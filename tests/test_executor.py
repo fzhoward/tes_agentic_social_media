@@ -709,6 +709,36 @@ def test_event_happy_path_dispatches_edit_commit() -> None:
     )
 
 
+def test_event_slack_mrkdwn_stripped_from_caption() -> None:
+    # A Slack event whose text contains mrkdwn link syntax must arrive at
+    # _run_cli with the syntax stripped — the stored caption must be clean.
+    # The piped tel: form is the canonical real-world case (Slack renders the
+    # owner's phone number as a link when they type it in the thread reply).
+    rows = [(2, {"row_id": "ROW-99", "status": "drafted"})]
+    run = Mock(return_value=(0, {"success": True}))
+    mrkdwn_event = dict(
+        _VALID_EVENT,
+        text="Call us at <tel:9044520888|(904) 452-0888> for a quote.",
+    )
+    with ExitStack() as stack:
+        find = _patch_row_read(stack, find_return=rows)
+        stack.enter_context(patch.object(executor, "_run_cli", run))
+        executor._dispatch_event(mrkdwn_event)
+
+    called_args = run.call_args.args[0] if run.call_args else None
+    caption_idx = called_args.index("--caption-text") + 1 if called_args and "--caption-text" in called_args else -1
+    clean_caption = called_args[caption_idx] if caption_idx >= 0 else None
+
+    _check(
+        "25. _dispatch_event — Slack mrkdwn tel: link stripped from caption "
+        "before passing to _run_cli",
+        find.called is True
+        and run.call_count == 1
+        and clean_caption == "Call us at (904) 452-0888 for a quote.",
+        f"run_count={run.call_count}, caption={clean_caption!r}",
+    )
+
+
 def run_tests() -> int:
     print()
     print("Deterministic tests (no API calls, no subprocess, no Slack):")
@@ -737,6 +767,7 @@ def run_tests() -> int:
     test_event_row_read_raises_swallowed()
     test_event_status_not_drafted_guard()
     test_event_happy_path_dispatches_edit_commit()
+    test_event_slack_mrkdwn_stripped_from_caption()
 
     total = _PASSED + len(_FAILURES)
     print()

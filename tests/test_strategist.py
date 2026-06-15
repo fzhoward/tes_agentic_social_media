@@ -364,6 +364,65 @@ def test_video_cap_enforcement() -> None:
     )
 
 
+def test_content_type_cap_enforcement() -> None:
+    base = datetime(2026, 5, 27, 9, 0, 0, tzinfo=strategist.ET)
+    sp = strategist.SOCIAL_PROOF_CONTENT_TYPE  # "Social Proof / Customer Story"
+
+    # 3 GBP Social Proof posts at increasing scheduled_datetime.
+    gbp_posts = [
+        {
+            strategist.CQ_PLATFORM: "gbp",
+            strategist.CQ_CONTENT_TYPE: sp,
+            strategist.CQ_SCHEDULED: (base + timedelta(days=i)).isoformat(),
+        }
+        for i in range(3)
+    ]
+    # 2 Facebook Social Proof posts — unrestricted.
+    fb_posts = [
+        {
+            strategist.CQ_PLATFORM: "facebook",
+            strategist.CQ_CONTENT_TYPE: sp,
+            strategist.CQ_SCHEDULED: (base + timedelta(days=i)).isoformat(),
+        }
+        for i in range(2)
+    ]
+    posts = gbp_posts + fb_posts
+    caps = {"gbp": {sp: 1}}
+
+    survivors, warnings = strategist.enforce_content_type_caps(posts, caps)
+
+    gbp_survivors = [p for p in survivors if p[strategist.CQ_PLATFORM] == "gbp"]
+    fb_survivors = [p for p in survivors if p[strategist.CQ_PLATFORM] == "facebook"]
+
+    # Exactly 1 GBP survivor, and it is the earliest-scheduled.
+    gbp_ok = (
+        len(gbp_survivors) == 1
+        and gbp_survivors[0][strategist.CQ_SCHEDULED]
+        == (base + timedelta(days=0)).isoformat()
+    )
+    # Both FB posts survive.
+    fb_ok = len(fb_survivors) == 2
+    # 2 GBP posts were dropped → 2 warnings.
+    warnings_ok = len(warnings) == 2
+
+    _check(
+        "9b. content_type_cap_enforcement — GBP capped at 1 Social Proof "
+        "(earliest kept), FB untouched, 2 warnings emitted",
+        gbp_ok and fb_ok and warnings_ok,
+        f"gbp_survivors={len(gbp_survivors)}, "
+        f"gbp_dt={gbp_survivors[0][strategist.CQ_SCHEDULED] if gbp_survivors else None}, "
+        f"fb_survivors={len(fb_survivors)}, warnings={len(warnings)}",
+    )
+
+    # Empty caps → no-op.
+    all_survive, no_warnings = strategist.enforce_content_type_caps(posts, {})
+    _check(
+        "9c. content_type_cap_enforcement — empty caps dict is a no-op",
+        len(all_survive) == len(posts) and no_warnings == [],
+        f"survivors={len(all_survive)}, warnings={no_warnings}",
+    )
+
+
 def test_validate_post_object() -> None:
     window_start = datetime(2026, 5, 27, 0, 0, 0, tzinfo=strategist.ET)
     window_end = datetime(2026, 6, 3, 0, 0, 0, tzinfo=strategist.ET)
@@ -1599,6 +1658,7 @@ def run_tests() -> int:
     test_text_overlay_derivation()
     test_timing_gap_enforcement()
     test_video_cap_enforcement()
+    test_content_type_cap_enforcement()
     test_validate_post_object()
     test_compact_catalog_line_includes_specs()
     test_compact_catalog_line_omits_empty_specs()

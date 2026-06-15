@@ -417,6 +417,9 @@ def _dispatch_event(event: dict) -> None:
         print("slack/events ignore: parent message, not a reply", file=sys.stderr)
         return
     caption_text = event.get("text")
+    if caption_text:
+        from tools.slack_helpers import unwrap_slack_mrkdwn
+        caption_text = unwrap_slack_mrkdwn(caption_text)
     if not caption_text or not caption_text.strip():
         print("slack/events ignore: empty text", file=sys.stderr)
         return

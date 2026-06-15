@@ -82,7 +82,7 @@ For each post slot in the batch, select a content type using:
 3. **Platform fit** — reference Content Type Definitions for which types are strong/moderate/weak on each platform
 4. **Calendar fit** — if Local Calendar has a seasonal beat in the planning window, preferentially pick content types that match
 5. **Objective alignment** — pick content types whose native lean matches the needed objective, or explicitly override the lean with appropriate framing
-6. **Review data availability** — Social Proof / Customer Story content type requires at least one usable review in the Reviews Sheet (`usable_for_social=TRUE`). If no usable reviews exist, do not plan Social Proof posts. If reviews are available, include Social Proof in the content mix — aim for 1-2 Social Proof posts per platform per week when 66+ usable reviews are available.
+6. **Review data availability** — Social Proof / Customer Story content type requires at least one usable review in the Reviews Sheet (`usable_for_social=TRUE`). If no usable reviews exist, do not plan Social Proof posts. If reviews are available, include Social Proof in the content mix — aim for 1-2 Social Proof posts per week on Facebook/Instagram when 66+ usable reviews are available; aim for at most 1 Social Proof post per week on Google Business Profile (gbp). GBP is hard-capped at 1 Social Proof / Customer Story per 7-day window (config: `strategy.variety_constraints.content_type_caps_per_platform`); FB/IG are unrestricted. Enforcement is via prompt guidance plus a deterministic backstop that DROPS excess GBP Social Proof posts (keeping the earliest-scheduled) and emits one warning per drop; total Social Proof volume on GBP may therefore be reduced after planning.
 
 ### 5. Select Catalog Items
 
@@ -127,6 +127,9 @@ For each post, assign one of the four media formats:
 **Video frequency:**
 - Default: max 2 `creatomate_video` posts per platform per week
 - The Learning Agent can adjust this in Strategy Guidance based on video performance data
+
+**GBP video support:**
+GBP accepts video. SocialBu and the Google Local Posts API both support video on GBP. Creatomate clips (8-10s) are within GBP's platform limits (30s / 75 MB / 720p minimum); see `skills/platform_style.md` for full specs rather than duplicating them here. The 2-videos-per-platform-per-week cap applies uniformly across all platforms including GBP.
 
 ### 7. Assign CTA Type
 

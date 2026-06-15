@@ -169,3 +169,46 @@ def test_upload_file(tmp_path):
         initial_comment="[TEST] slack_helpers test — file upload",
     )
     assert response.get("ok") is True
+
+
+# ---------------------------------------------------------------------------
+# unwrap_slack_mrkdwn — pure function, no Slack connection needed
+# ---------------------------------------------------------------------------
+
+def test_unwrap_slack_mrkdwn():
+    fn = slack_helpers.unwrap_slack_mrkdwn
+
+    # Piped tel: → display text.
+    assert fn("Call us at <tel:9044520888|(904) 452-0888>.") == \
+        "Call us at (904) 452-0888."
+
+    # Bare tel: → number only (scheme dropped).
+    assert fn("<tel:9044520888>") == "9044520888"
+
+    # Piped URL → display text.
+    assert fn("<https://tes.com|our site>") == "our site"
+
+    # Bare URL → URL kept intact.
+    assert fn("<https://tes.com>") == "https://tes.com"
+
+    # HTML entity unescaping.
+    assert fn("Deals &amp; more") == "Deals & more"
+
+    # Plain text — no markup → unchanged.
+    plain = "plain text, no markup"
+    assert fn(plain) == plain
+
+    # Legitimate angle brackets must NOT be eaten by the bare-link regex:
+    # only scheme-bearing <...> are treated as links.
+    assert fn("Compacts soil under load < 5 tons > 3 PSI") == \
+        "Compacts soil under load < 5 tons > 3 PSI"
+    # Slack-escaped comparison text round-trips back to literal brackets.
+    assert fn("load &lt; 5 tons &gt; 3") == "load < 5 tons > 3"
+    # Ampersand in legitimate copy survives.
+    assert fn("Tom &amp; Jerry Rentals") == "Tom & Jerry Rentals"
+
+    # Idempotency: applying twice gives the same result as once.
+    tel_case = "Call us at <tel:9044520888|(904) 452-0888>."
+    once = fn(tel_case)
+    twice = fn(once)
+    assert once == twice
